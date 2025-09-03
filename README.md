@@ -1,7 +1,7 @@
-# Aduib MCP Server Template
+# Aduib MCP Router
 ## 项目简介
 
-本项目为 一个基于 FastAPI 的 MCP 服务端模板，支持多种数据库和缓存后端，具有良好的扩展性和易用性。
+Aduib MCP Router 是一个多MCP聚合路由器，支持多种MCP协议，旨在简化MCP服务器的管理和使用。
 
 ## 快速开始
 1. 安装环境

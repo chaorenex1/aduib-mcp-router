@@ -1,7 +1,7 @@
 [project]
-name = "aduib_mcp_server_template"
-version = "0.1.0"
-description = "A template for MCP server using FastAPI"
+name = "aduib-mcp-router"
+dynamic = ["version"]
+description = "A Router service for MCP service discovery and routing."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = {text = "Apache-2.0"}
@@ -10,26 +10,36 @@ authors = [
     ]
 dependencies = [
     "bcrypt>=4.3.0",
-    "fastapi>=0.116.1",
     "nacos-sdk-python>=2.0.1",
-    "aduib_rpc>=1.0.4",
     "nacos-mcp-wrapper-python",
-    "psycopg2-binary>=2.9.10",
     "pydantic>=2.11.3",
     "pydantic-settings>=2.9.1",
-    "sqlalchemy==2.0.39",
-    "uvicorn>=0.34.2",
-    "redis>=6.4.0",
     "pyyaml",
     "pytz"
 ]
-[tool.setuptools]
-packages = []
+[project.scripts]
+aduib-mcp-router = "aduib-mcp-router:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aduib_rpc"]
+
+[build-system]
+requires = ["hatchling","uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["tests/"]
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+format = "{base}"
 
 [tool.uv]
 [dependency-groups]
 dev= [
-    "alembic==1.16.4",
     "pytest==8.4.1"
 ]
 
