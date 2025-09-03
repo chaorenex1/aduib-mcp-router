@@ -3,7 +3,7 @@ name = "aduib-mcp-router"
 dynamic = ["version"]
 description = "A Router service for MCP service discovery and routing."
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "chaorenex1", email = "24537608z@gmail.com"},
@@ -21,7 +21,7 @@ dependencies = [
 aduib-mcp-router = "aduib-mcp-router:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aduib_rpc"]
+packages = ["aduib_mcp_router"]
 
 [build-system]
 requires = ["hatchling","uv-dynamic-versioning"]
