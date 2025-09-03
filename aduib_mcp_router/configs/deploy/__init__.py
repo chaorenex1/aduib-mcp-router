@@ -3,8 +3,8 @@ from pydantic_settings import BaseSettings
 
 
 class DeploymentConfig(BaseSettings):
-    APP_NAME: str = Field(default="aduib_mcp_server", description="Application name")
-    APP_DESCRIPTION: str = Field(default="Aduib MCP Server", description="Application description")
+    APP_NAME: str = Field(default="aduib_mcp_router", description="Application name")
+    APP_DESCRIPTION: str = Field(default="Aduib MCP Router", description="Application description")
     APP_HOME: str = Field(default="", description="Application home directory")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")
     APP_HOST: str = Field(default="127.0.0.1",description="Application host")
@@ -39,4 +39,4 @@ class AuthConfig(BaseSettings):
 
 
 class MCPConfig(BaseSettings):
-    TRANSPORT_TYPE: str = Field(default="streamable-http", description="MCP transport type (stdio, sse, streamable-http)")
+    TRANSPORT_TYPE: str = Field(default="sse", description="MCP transport type (stdio, sse, streamable-http)")

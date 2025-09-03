@@ -13,7 +13,7 @@ class RemoteSettingsSourceConfig(NacosConfig):
     )
 
 class DiscoveryConfig(BaseSettings):
-    DISCOVERY_SERVICE_ENABLED: bool = Field(default=False, description="Enable service discovery")
+    DISCOVERY_SERVICE_ENABLED: bool = Field(default=True, description="Enable service discovery")
     DISCOVERY_SERVICE_TYPE: str = Field(default="nacos", description="Type of service discovery")
 
 
