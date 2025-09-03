@@ -7,11 +7,11 @@ class McpServerInfoArgs(BaseModel):
     """Information about the MCP server."""
 
     model_config = ConfigDict(extra="allow")
-    command: Literal['npx','uvx'] = 'npx'
+    command: str = None
     args: list[str]=[]
     env: dict[str,str]={}
     headers: dict[str,str]={}
-    type: Literal['streamableHttp','sse']='streamableHttp'
+    type: str=None
     url: str=None
 
 class McpServerInfo(BaseModel):
@@ -32,7 +32,8 @@ class ShellEnv(BaseModel):
     """Environment variable for shell command."""
 
     model_config = ConfigDict(extra="allow")
-    uvx_path: str = None
-    npx_path: str = None
+    bin_path: str = None
     command_get_env: Literal['set','env'] = 'env'
-    command_run: Literal['cmd.exe /c','/bin/bash -ilc'] = '/bin/bash -ilc'
+    command_run: Literal['cmd.exe','/bin/bash'] = '/bin/bash'
+    args: list[str]=[]
+    env: dict[str, str] = None

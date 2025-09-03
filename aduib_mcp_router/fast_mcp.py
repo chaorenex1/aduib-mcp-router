@@ -84,7 +84,7 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
 
     # Server settings
     debug: bool = config.DEBUG
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_level: str = config.LOG_LEVEL  # e.g. "info", "debug", "warning"
 
     # HTTP settings
     host: str = config.APP_HOST

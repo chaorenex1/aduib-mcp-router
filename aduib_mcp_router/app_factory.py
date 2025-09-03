@@ -3,7 +3,7 @@ import os
 import time
 
 from aduib_app import AduibAIApp
-from aduib_mcp_router.mcp_router.router_factory import RouterFactory
+from aduib_mcp_router.mcp_router.router_manager import RouterManager
 from component.log.app_logging import init_logging
 from configs import config
 
@@ -60,7 +60,7 @@ def init_fast_mcp(app: AduibAIApp):
     app.mcp = mcp
     from mcp_service import load_mcp_plugins
     load_mcp_plugins("mcp_service")
-    RouterFactory.init_router_env(app)
+    RouterManager.init_router_env(app)
     log.info("fast mcp initialized successfully")
 
 async def run_mcp_server(app):

@@ -26,7 +26,7 @@ class DeploymentConfig(BaseSettings):
     IS_SSL: bool = Field(default=False, description="Enable SSL")
     SSL_CERTFILE: str = Field(default="", description="Path to the SSL certificate file")
     SSL_KEYFILE: str = Field(default="", description="Path to the SSL key file")
-    DEBUG: bool = Field(default=False, description="Enable debug mode")
+    DEBUG: bool = Field(default=True, description="Enable debug mode")
 
 
     @property

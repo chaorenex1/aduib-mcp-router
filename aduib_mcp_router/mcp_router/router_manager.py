@@ -1,24 +1,27 @@
+import asyncio
 import json
 import logging
 import os
-import platform
 import secrets
 import sys
+import traceback
 from pathlib import Path
 
 import requests
 
 from aduib_mcp_router.aduib_app import AduibAIApp
 from aduib_mcp_router.configs import config
-from aduib_mcp_router.mcp_router.install_uv import install_uv
 from aduib_mcp_router.mcp_router.install_bun import install_bun
+from aduib_mcp_router.mcp_router.install_uv import install_uv
+from aduib_mcp_router.mcp_router.mcp_client import McpClient
 from aduib_mcp_router.mcp_router.types import McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv
 
 logger=logging.getLogger(__name__)
 
 _mcp_server_store:dict[str, McpServerInfo] = {}
+_mcp_client_store:dict[str, McpClient] = {}
 
-class RouterFactory:
+class RouterManager:
     """Factory class for initializing router configurations and directories."""
     @classmethod
     def init_router_home(cls,app:AduibAIApp):
@@ -72,6 +75,9 @@ class RouterFactory:
         for name, args in mcp_servers_dict.items():
             logger.info(f"Resolving MCP configuration for {name}, args: {args}")
             mcp_server_args = McpServerInfoArgs.model_validate(args)
+            if not mcp_server_args.type:
+                mcp_server_args.type='stdio'
+
             mcp_server = McpServerInfo(id=secrets.token_urlsafe(16), name=name, args=mcp_server_args)
             _mcp_server_store[mcp_server.name] = mcp_server
         mcp_servers = McpServers(servers=list(_mcp_server_store.values()))
@@ -91,13 +97,30 @@ class RouterFactory:
     def get_shell_env(cls,args:McpServerInfoArgs)-> ShellEnv:
         """Get shell environment variables."""
         shell_env = ShellEnv()
-        if args.command and args.command=='npx':
-            shell_env.npx_path=cls.get_binary('bun')
-        if args.command and args.command=='uvx':
-            shell_env.uvx_path=cls.get_binary('uvx')
+        args_list = []
         if sys.platform == 'win32':
             shell_env.command_get_env='set'
-            shell_env.command_run='cmd.exe /c'
+            shell_env.command_run='cmd.exe'
+            args_list.append('/c')
+        else:
+            shell_env.command_get_env='env'
+            shell_env.command_run='/bin/bash'
+            args_list.append('-ilc')
+        if args.command and args.command=='npx':
+            shell_env.bin_path=cls.get_binary('bun')
+            args_list.append(shell_env.bin_path)
+            for i, arg in enumerate(args.args):
+                if arg == '-y' or arg == '--yes':
+                    args_list.append('x')
+                else:
+                    args_list.append(arg)
+        if args.command and (args.command=='uvx' or args.command=='uv'):
+            shell_env.bin_path=cls.get_binary('uvx')
+            args_list.append(shell_env.bin_path)
+            for i, arg in enumerate(args.args):
+                args_list.append(arg)
+        shell_env.args = args_list
+        shell_env.env = args.env
         return shell_env
 
     @classmethod
@@ -107,6 +130,31 @@ class RouterFactory:
             binary_name = f"{binary_name}.exe"
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
+
+    @classmethod
+    async def init_mcp_clients(cls, app: AduibAIApp):
+        """Initialize MCP clients based on the loaded configurations."""
+        tasks = []
+        for mcp_server in _mcp_server_store.values():
+            client = McpClient(mcp_server)
+            _mcp_client_store[mcp_server.id] = client
+            task = asyncio.create_task(cls._run_client(client))
+            tasks.append(task)
+            logger.info(f"MCP client '{mcp_server.name}' type '{client.client_type}' initialized.")
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @classmethod
+    async def _run_client(cls, client: McpClient):
+        """run MCP client."""
+        try:
+           async with client:
+                # maintain the client running
+                logger.info(f"Client {client.server.name} started successfully")
+                await client.process_messages()
+        except Exception as e:
+            traceback.print_exc()
+            logger.error(f"Client {client.server.name} failed: {e}")
 
 
     @classmethod
