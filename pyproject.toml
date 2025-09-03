@@ -1,0 +1,38 @@
+[project]
+name = "aduib_mcp_server_template"
+version = "0.1.0"
+description = "A template for MCP server using FastAPI"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "chaorenex1", email = "24537608z@gmail.com"},
+    ]
+dependencies = [
+    "bcrypt>=4.3.0",
+    "fastapi>=0.116.1",
+    "nacos-sdk-python>=2.0.1",
+    "aduib_rpc>=1.0.4",
+    "nacos-mcp-wrapper-python",
+    "psycopg2-binary>=2.9.10",
+    "pydantic>=2.11.3",
+    "pydantic-settings>=2.9.1",
+    "sqlalchemy==2.0.39",
+    "uvicorn>=0.34.2",
+    "redis>=6.4.0",
+    "pyyaml",
+    "pytz"
+]
+[tool.setuptools]
+packages = []
+
+[tool.uv]
+[dependency-groups]
+dev= [
+    "alembic==1.16.4",
+    "pytest==8.4.1"
+]
+
+[[tool.uv.index]]
+url = "http://mirrors.aliyun.com/pypi/simple/"
+default = true

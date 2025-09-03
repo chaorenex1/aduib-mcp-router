@@ -1,0 +1,5 @@
+Generic single-database configuration.
+
+# command to run the migrations
+alembic -c .\alembic\alembic.ini revision --autogenerate -m "init table"
+alembic -c .\alembic\alembic.ini upgrade head

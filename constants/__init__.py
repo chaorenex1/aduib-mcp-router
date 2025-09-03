@@ -1,0 +1,5 @@
+IMAGE_EXTENSIONS=['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp','svg']
+VIDEO_EXTENSIONS=['mp4']
+AUDIO_EXTENSIONS=['mp3', 'wav', 'ogg', 'flac', 'aac', 'wma', 'm4a', 'opus']
+DOCUMENT_EXTENSIONS=['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'md', 'markdown']
+CODE_EXTENSIONS=['java','py','js','ts','html','css','scss','less','json','xml','yaml','yml','ini','cfg','conf','properties','sh','bash','bat','cmd','ps1','sql','pl','php','rb','r','cs','cpp','c','h','hpp','h','go','kt','kts','groovy','scala','swift','dart','rs','lua','perl','tcl','raku','v','zig','nim','cr','d','f90','f95']
