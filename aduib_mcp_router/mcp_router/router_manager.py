@@ -217,6 +217,7 @@ class RouterManager:
             from aduib_mcp_router.nacos_mcp import NacosMCP
             nacos_mcp = cast(NacosMCP, self.app.mcp)
             await nacos_mcp.register_service(self.app.config.TRANSPORT_TYPE)
+
         await mcp_factory.run_mcp_server()
 
     async def _register_to_discovery_service(self):

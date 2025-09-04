@@ -2,7 +2,6 @@ import asyncio
 
 from aduib_mcp_router.app_factory import create_app
 from aduib_mcp_router.libs import app_context
-from aduib_mcp_router.mcp_factory import MCPFactory
 from aduib_mcp_router.mcp_router.router_manager import RouterManager
 
 app=None
