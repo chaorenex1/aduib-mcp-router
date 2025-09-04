@@ -129,7 +129,7 @@ class McpClient:
             self._streams_context = client_factory(url=self.server_url + "/mcp", headers=self.get_client_header())
         else:
             from aduib_mcp_router.mcp_router.router_manager import RouterManager
-            sell_env: ShellEnv = RouterManager.get_shell_env(self.server.args)
+            sell_env: ShellEnv = RouterManager.get_shell_env(args=self.server.args)
             server_params = StdioServerParameters(
                 command=sell_env.command_run,
                 args=sell_env.args,

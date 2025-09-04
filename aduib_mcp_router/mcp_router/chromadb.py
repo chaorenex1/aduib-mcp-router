@@ -26,6 +26,7 @@ class ChromaDB:
 
     def create_collection(self, collection_name: str) -> str:
         _collectionId = "aduib_mcp_router_" + collection_name
+        self.dbClient.delete_collection(_collectionId)
         _collection = self.dbClient.get_or_create_collection(_collectionId)
         self.collections[_collectionId] = _collection
         logger.debug(f"Created collection {_collectionId}")

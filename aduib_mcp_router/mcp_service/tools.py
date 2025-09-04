@@ -1,77 +1,29 @@
-from typing import TypedDict
-
-from mcp import ServerSession
-from mcp.server.fastmcp import Context
+import logging
+from typing import Any
 
 from aduib_mcp_router.app import app
 
+logger=logging.getLogger(__name__)
+
 mcp= app.mcp
+router_manager= app.router_manager
 
 
 @mcp.tool()
-def sum(a: int, b: int) -> int:
-    """Add two numbers together."""
-    return a + b
+def search_tool(query: str) -> dict[str, Any]:
+    """search Tools from VectorDB."""
+    logger.debug(f"search_tool called with query: {query}")
+    query_result = router_manager.ChromaDb.query(router_manager.tools_collection, query, 10)
+    metadatas = query_result.get("metadatas")
+    metadata_list = metadatas[0] if metadatas else []
+    if not metadata_list:
+        logger.debug("No metadata found in search_tool result.")
+        return query_result
 
+    metadata=metadata_list[0] # Just take the top result for simplicity
+    server_id = metadata.get("server_id")
+    mcp_server_info = router_manager.get_mcp_server(server_id)
+    original_tool_name = metadata.get("original_name")
+    tool_info = router_manager.get_tool(original_tool_name, server_id)
 
-@mcp.tool()
-def get_weather(city: str, unit: str = "celsius") -> str:
-    """Get weather for a city."""
-    # This would normally call a weather API
-    return f"Weather in {city}: 22degrees{unit[0].upper()}"
-
-
-
-@mcp.tool()
-async def long_running_task(task_name: str, ctx: Context[ServerSession, None], steps: int = 5) -> str:
-    """Execute a task with progress updates."""
-    await ctx.info(f"Starting: {task_name}")
-
-    for i in range(steps):
-        progress = (i + 1) / steps
-        await ctx.report_progress(
-            progress=progress,
-            total=1.0,
-            message=f"Step {i + 1}/{steps}",
-        )
-        await ctx.debug(f"Completed step {i + 1}")
-
-    return f"Task '{task_name}' completed"
-
-
-# Using TypedDict for simpler structures
-class LocationInfo(TypedDict):
-    latitude: float
-    longitude: float
-    name: str
-
-
-@mcp.tool()
-def get_location(address: str) -> LocationInfo:
-    """Get location coordinates"""
-    return LocationInfo(latitude=51.5074, longitude=-0.1278, name="London, UK")
-
-
-# Using dict[str, Any] for flexible schemas
-@mcp.tool()
-def get_statistics(data_type: str) -> dict[str, float]:
-    """Get various statistics"""
-    return {"mean": 42.5, "median": 40.0, "std_dev": 5.2}
-
-
-
-class UserProfile:
-    name: str
-    age: int
-    email: str | None = None
-
-    def __init__(self, name: str, age: int, email: str | None = None):
-        self.name = name
-        self.age = age
-        self.email = email
-
-
-@mcp.tool()
-def get_user(user_id: str) -> UserProfile:
-    """Get user profile - returns structured data"""
-    return UserProfile(name="Alice", age=30, email="alice@example.com")
+    return {"server_info": mcp_server_info, "tool_info": tool_info}
