@@ -9,6 +9,7 @@ authors = [
     {name = "chaorenex1", email = "24537608z@gmail.com"},
     ]
 dependencies = [
+    "chromadb>=1.0.5",
     "bcrypt>=4.3.0",
     "nacos-sdk-python>=2.0.1",
     "nacos-mcp-wrapper-python",
@@ -18,7 +19,7 @@ dependencies = [
     "pytz"
 ]
 [project.scripts]
-aduib-mcp-router = "aduib-mcp-router:main"
+aduib_mcp_router = "aduib_mcp_router:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aduib_mcp_router"]

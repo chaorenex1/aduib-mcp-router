@@ -3,7 +3,6 @@ import os
 import time
 
 from aduib_app import AduibAIApp
-from aduib_mcp_router.mcp_router.router_manager import RouterManager
 from component.log.app_logging import init_logging
 from configs import config
 
@@ -60,8 +59,17 @@ def init_fast_mcp(app: AduibAIApp):
     app.mcp = mcp
     from mcp_service import load_mcp_plugins
     load_mcp_plugins("mcp_service")
-    RouterManager.init_router_env(app)
     log.info("fast mcp initialized successfully")
 
 async def run_mcp_server(app):
-    await app.mcp.run_stdio_async()
+    if not app.mcp:
+        log.warning("MCP is not initialized, skipping MCP server startup.")
+        return
+    if config.TRANSPORT_TYPE == "stdio":
+        await app.mcp.run_stdio_async()
+    elif config.TRANSPORT_TYPE == "sse":
+        await app.mcp.run_sse_async()
+    elif config.TRANSPORT_TYPE == "streamable-http":
+        await app.mcp.run_streamable_http_async()
+    else:
+        log.error(f"Unsupported TRANSPORT_TYPE: {config.TRANSPORT_TYPE}")

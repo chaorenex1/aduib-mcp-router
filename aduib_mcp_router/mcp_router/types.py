@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Tuple, Any
 
 from pydantic import BaseModel, ConfigDict, AnyHttpUrl
 
@@ -37,3 +37,18 @@ class ShellEnv(BaseModel):
     command_run: Literal['cmd.exe','/bin/bash'] = '/bin/bash'
     args: list[str]=[]
     env: dict[str, str] = None
+
+
+
+class RouteMessage(BaseModel):
+    """Class representing a routed message."""
+    function_name: str
+    args: Tuple[Any,...]=(),
+    kwargs: dict[str, Any] = {}
+
+
+class RouteMessageResult(BaseModel):
+    """Class representing the result of a routed message."""
+    function_name: str
+    result: Any = None
+    error: str | None = None

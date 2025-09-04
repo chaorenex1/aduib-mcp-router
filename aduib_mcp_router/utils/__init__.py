@@ -7,7 +7,6 @@ from .module_import_helper import (
     import_module_from_source,
 )
 from .net import get_local_ip
-from .rate_limit import RateLimit
 from .uuid import random_uuid, message_uuid, trace_uuid, generate_string
 from .yaml_utils import load_yaml_file, load_yaml_files
 
@@ -21,7 +20,6 @@ __all__ = [
     "trace_uuid",
     "generate_string",
     "jsonable_encoder",
-    "RateLimit",
     "load_yaml_file",
     "load_yaml_files",
     "get_subclasses_from_module",

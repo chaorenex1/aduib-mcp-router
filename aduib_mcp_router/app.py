@@ -1,6 +1,7 @@
+import asyncio
+
 from aduib_mcp_router.mcp_router.router_manager import RouterManager
 from app_factory import create_app, init_fast_mcp, run_mcp_server
-from nacos_mcp import NacosMCP
 
 app=None
 if not app:
@@ -8,8 +9,8 @@ if not app:
 
 async def main():
 
+    router_manager = RouterManager.get_router_manager(app)
+    app.extensions['router']=router_manager
     init_fast_mcp(app)
-    if isinstance(app.mcp,NacosMCP):
-        await app.mcp.register_service(app.config.TRANSPORT_TYPE)
-    await RouterManager.init_mcp_clients(app)
-    await run_mcp_server(app)
+    task= [router_manager.init_mcp_clients(app), run_mcp_server(app)]
+    await asyncio.gather(*task)

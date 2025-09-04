@@ -1,9 +1,9 @@
 from typing import Any
 
-from fast_mcp import FastMCP
 
 
 class AduibAIApp:
+    from fast_mcp import FastMCP
     app_home: str = "."
     router_home: str = ""
     mcp: FastMCP= None

@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from contextlib import ExitStack, AsyncExitStack, AbstractContextManager, AbstractAsyncContextManager
+from contextlib import AsyncExitStack, AbstractAsyncContextManager
 from types import TracebackType
-from typing import Any, AsyncGenerator, Optional, Self, Callable, cast
-from urllib.parse import urlparse
+from typing import Any, Optional, Self, Callable, cast
 
 import anyio
 from mcp import ClientSession, StdioServerParameters, stdio_client
@@ -11,14 +10,16 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
 
 from aduib_mcp_router.configs import config
-from aduib_mcp_router.mcp_router.types import McpServerInfo, ShellEnv
+from aduib_mcp_router.mcp_router.types import McpServerInfo, ShellEnv, RouteMessage, RouteMessageResult
 
-logger=logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
 
 class McpClient:
     """A implementation of an MCP client."""
-    def __init__(self, server:McpServerInfo):
-        self.oauth_auth:Any =None
+
+    def __init__(self, server: McpServerInfo):
+        self.oauth_auth: Any = None
         if server.args.url:
             self.server_url = server.args.url
             if self.server_url.endswith("/"):
@@ -29,7 +30,7 @@ class McpClient:
         else:
             logger.debug(f"MCP server name '{server.name}' using type '{server.args.type}'")
             self.client_type = 'stdio'  # 'stdio', 'sse', 'streamable'
-        self.server=server
+        self.server = server
         self.user_agent = config.DEFAULT_USER_AGENT
 
         self._session: Optional[ClientSession] = None
@@ -45,13 +46,11 @@ class McpClient:
         self.serverToClientQueue = asyncio.Queue()
         self.clientToServerQueue = asyncio.Queue()
 
-
     def get_serverToClientQueue(self) -> asyncio.Queue:
         return self.serverToClientQueue
 
     def get_clientToServerQueue(self) -> asyncio.Queue:
         return self.clientToServerQueue
-
 
     async def __aenter__(self) -> Self:
         self._task_group = anyio.create_task_group()
@@ -63,10 +62,10 @@ class McpClient:
         return self
 
     async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
     ) -> bool | None:
         await self.cleanup()
         # Using BaseSession as a context manager should not block on exit (this
@@ -125,9 +124,9 @@ class McpClient:
             self, client_factory: Callable[..., AbstractAsyncContextManager[Any]], method_name: str
     ):
         if self.client_type == 'sse':
-            self._streams_context = client_factory(url=self.server_url+"/sse", headers=self.get_client_header())
+            self._streams_context = client_factory(url=self.server_url + "/sse", headers=self.get_client_header())
         elif self.client_type == 'streamableHttp':
-            self._streams_context = client_factory(url=self.server_url+"/mcp", headers=self.get_client_header())
+            self._streams_context = client_factory(url=self.server_url + "/mcp", headers=self.get_client_header())
         else:
             from aduib_mcp_router.mcp_router.router_manager import RouterManager
             sell_env: ShellEnv = RouterManager.get_shell_env(self.server.args)
@@ -158,14 +157,14 @@ class McpClient:
             try:
                 # from client to server
                 if not self.clientToServerQueue.empty():
-                    message = await self.clientToServerQueue.get()
-                    await self._send_to_server(message)
+                    message: RouteMessage = await self.clientToServerQueue.get()
+                    await self._send_to_receive(message)
                     self.clientToServerQueue.task_done()
 
                 # from server to client
-                server_message = await self._receive_from_server()
-                if server_message:
-                    await self.serverToClientQueue.put(server_message)
+                # server_message = await self._receive_from_server()
+                # if server_message:
+                #     await self.serverToClientQueue.put(server_message)
 
                 # avoid busy loop
                 await asyncio.sleep(0.01)
@@ -176,48 +175,89 @@ class McpClient:
                 logger.error(f"Message handler error: {e}")
                 await asyncio.sleep(1)  # 错误时等待更长时间
 
-    async def _send_to_server(self, message: Any):
-        """发送消息到服务器"""
+    async def _send_to_receive(self, message: RouteMessage):
+        """send message to the server and handle the response"""
         if self._session:
             try:
-                # 根据消息类型调用相应的MCP方法
-                # 这里需要根据你的具体消息格式来实现
-                pass
+                result = await self._handle_message(message)
+                if result:
+                    await self.serverToClientQueue.put(result)
             except Exception as e:
                 logger.error(f"Failed to send message to server: {e}")
 
-    async def _receive_from_server(self) -> Optional[Any]:
-        """从服务器接收消息"""
-        if self._session:
-            try:
-                # 这里需要实现从MCP会话接收消息的逻辑
-                # 具体实现取决于MCP库的API
-                pass
-            except Exception as e:
-                logger.error(f"Failed to receive message from server: {e}")
-        return None
-
-    async def send_message(self, message: Any):
-        """公共接口：发送消息"""
+    async def send_message(self, message: RouteMessage):
+        """send a message to the server"""
         await self.clientToServerQueue.put(message)
 
     async def receive_message(self, timeout: Optional[float] = None) -> Any:
-        """公共接口：接收消息"""
+        """receive a message with optional timeout"""
         try:
-            return await asyncio.wait_for(
-                self.serverToClientQueue.get(),
-                timeout=timeout
-            )
+            if not self._session:
+                logger.error("MCP session is not initialized")
+                return None
+
+            async def get_message():
+                wait_result = True
+                while wait_result:
+                    try:
+                        if not self.serverToClientQueue.empty():
+                            msg = await self.serverToClientQueue.get()
+                            self.serverToClientQueue.task_done()
+                            wait_result = False
+                            logger.debug(f"Received message from server: {msg}, wait_result={wait_result}")
+                            return msg
+                    except Exception as e:
+                        logger.error(f"Error receiving message: {e}")
+                        wait_result = False
+                    await asyncio.sleep(0.01)
+                return None
+
+            return await asyncio.wait_for(get_message(), timeout)
         except asyncio.TimeoutError:
             return None
 
-    async def process_messages(self):
+    async def _handle_message(self, message: RouteMessage) -> Optional[RouteMessageResult]:
+        """Handle a RouteMessage and return a RouteMessageResult."""
+        result = None
+        if not self._session:
+            logger.error("MCP session is not initialized")
+            return result
+        try:
+            if message.function_name == 'list_tools':
+                resp = await self._session.list_tools()
+                result = resp.tools
+            elif message.function_name == 'call_tool':
+                resp = await self._session.call_tool(
+                    name=message.args[0],
+                    arguments=message.args[1]
+                )
+                result = resp.content
+            elif message.function_name == 'list_prompts':
+                resp = await self._session.list_prompts()
+                result = resp.prompts
+            elif message.function_name == 'get_prompt':
+                resp = await self._session.get_prompt(name=message.args[0])
+                result = resp.messages
+            elif message.function_name == 'list_resources':
+                resp = await self._session.list_resources()
+                result = resp.resources
+            elif message.function_name == 'list_resource_templates':
+                resp = await self._session.list_resource_templates()
+                result = resp.resourceTemplates
+            elif message.function_name == 'read_resource':
+                resp = await self._session.read_resource(uri=message.args[0])
+                result = resp.contents
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+        return RouteMessageResult(function_name=message.function_name, result=result)
+
+    async def maintain_message_loop(self):
         """maintain the message processing loop"""
         logger.debug(f"Starting message processing loop for server '{self.server.name}'")
         while self._initialized:
-            await asyncio.sleep(0.1)  # 保持运行状态
+            await asyncio.sleep(100)  # 保持运行状态
 
-    def get_client_header(self) -> dict[str,str]:
+    def get_client_header(self) -> dict[str, str]:
         """Get the headers for the MCP client."""
         headers = {
             "User-Agent": self.user_agent,
@@ -231,6 +271,6 @@ class McpClient:
         return headers
 
     @classmethod
-    def build_client(cls,server:McpServerInfo) -> "McpClient":
+    def build_client(cls, server: McpServerInfo) -> "McpClient":
         """Factory method to create an McpClient instance."""
         return cls(server)
