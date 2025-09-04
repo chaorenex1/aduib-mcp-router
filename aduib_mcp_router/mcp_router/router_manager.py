@@ -138,17 +138,17 @@ class RouterManager:
         """Get shell environment variables."""
         shell_env = ShellEnv()
         args_list = []
-        if sys.platform == 'win32':
-            shell_env.command_get_env = 'set'
-            shell_env.command_run = 'cmd.exe'
-            args_list.append('/c')
-        else:
-            shell_env.command_get_env = 'env'
-            shell_env.command_run = '/bin/bash'
-            args_list.append('-ilc')
+        # if sys.platform == 'win32':
+        #     shell_env.command_get_env = 'set'
+        #     shell_env.command_run = 'cmd.exe'
+        #     args_list.append('/c')
+        # else:
+        #     shell_env.command_get_env = 'env'
+        #     shell_env.command_run = '/bin/bash'
+        #     args_list.append('-ilc')
         if args.command and args.command == 'npx':
             shell_env.bin_path = cls.get_binary('bun')
-            args_list.append(shell_env.bin_path)
+            shell_env.command_run=shell_env.bin_path
             for i, arg in enumerate(args.args):
                 if arg == '-y' or arg == '--yes':
                     args_list.append('x')
@@ -156,7 +156,7 @@ class RouterManager:
                     args_list.append(arg)
         if args.command and (args.command == 'uvx' or args.command == 'uv'):
             shell_env.bin_path = cls.get_binary('uvx')
-            args_list.append(shell_env.bin_path)
+            shell_env.command_run = shell_env.bin_path
             for i, arg in enumerate(args.args):
                 args_list.append(arg)
         shell_env.args = args_list

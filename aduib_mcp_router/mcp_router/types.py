@@ -34,7 +34,8 @@ class ShellEnv(BaseModel):
     model_config = ConfigDict(extra="allow")
     bin_path: str = None
     command_get_env: Literal['set','env'] = 'env'
-    command_run: Literal['cmd.exe','/bin/bash'] = '/bin/bash'
+    # command_run: Literal['cmd.exe','/bin/bash'] = '/bin/bash'
+    command_run: str = '/bin/bash'
     args: list[str]=[]
     env: dict[str, str] = None
 
