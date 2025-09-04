@@ -257,8 +257,19 @@ class McpClient:
     async def maintain_message_loop(self):
         """maintain the message processing loop"""
         logger.debug(f"Starting message processing loop for server '{self.server.name}'")
+        # import signal
+
+        stop_event = asyncio.Event()
+
+        # def handler():
+        #     stop_event.set()
+        #
+        # loop = asyncio.get_event_loop()
+        # loop.add_signal_handler(signal.SIGINT, handler)
+        # loop.add_signal_handler(signal.SIGTERM, handler)
         while self._initialized:
-            await asyncio.sleep(100)  # 保持运行状态
+            await stop_event.wait()
+        # await stop_event.wait()
 
     def get_client_header(self) -> dict[str, str]:
         """Get the headers for the MCP client."""
