@@ -11,7 +11,7 @@ from mcp.server.streamable_http import EventStore
 from nacos_mcp_wrapper.server.nacos_server import NacosServer
 from nacos_mcp_wrapper.server.nacos_settings import NacosSettings
 
-from fast_mcp import FastMCP
+from aduib_mcp_router.fast_mcp import FastMCP
 
 logger = logging.getLogger(__name__)
 

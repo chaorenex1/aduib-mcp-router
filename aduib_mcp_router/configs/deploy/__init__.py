@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 
 class DeploymentConfig(BaseSettings):
-    APP_NAME: str = Field(default="aduib_mcp_router", description="Application name")
+    APP_NAME: str = Field(default="aduib-mcp-router", description="Application name")
     APP_DESCRIPTION: str = Field(default="Aduib MCP Router", description="Application description")
     APP_HOME: str = Field(default="", description="Application home directory")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")

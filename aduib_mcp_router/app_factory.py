@@ -2,9 +2,9 @@ import logging
 import os
 import time
 
-from aduib_app import AduibAIApp
-from component.log.app_logging import init_logging
-from configs import config
+from aduib_mcp_router.aduib_app import AduibAIApp
+from aduib_mcp_router.component.log.app_logging import init_logging
+from aduib_mcp_router.configs import config
 
 log=logging.getLogger(__name__)
 

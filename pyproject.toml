@@ -1,6 +1,6 @@
 [project]
-name = "aduib_mcp_router"
-dynamic = ["version"]
+name = "aduib-mcp-router"
+version = "1.1.5"
 description = "A Router service for MCP service discovery and routing."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,18 +25,11 @@ aduib-mcp-router = "aduib_mcp_router:main"
 packages = ["aduib_mcp_router"]
 
 [build-system]
-requires = ["hatchling","uv-dynamic-versioning"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
 
 [tool.hatch.build.targets.sdist]
 exclude = ["test/",".env",".idea"]
-
-[tool.uv-dynamic-versioning]
-vcs = "git"
-format = "{base}"
 
 [tool.uv]
 [dependency-groups]

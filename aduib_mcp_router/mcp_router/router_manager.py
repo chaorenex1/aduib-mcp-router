@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import secrets
 import sys
 import traceback
 from pathlib import Path
@@ -97,8 +96,14 @@ class RouterManager:
                     self.resolve_mcp_configs(mcp_router_json, response.text)
             else:
                 if not os.path.exists(config.MCP_CONFIG_URL):
-                    logger.error("MCP configuration file not found.")
-                    raise FileNotFoundError(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist.")
+                    logger.warning(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist.")
+                    config.MCP_CONFIG_URL =os.getenv("MCP_CONFIG_URL")
+                    if not config.MCP_CONFIG_URL or not os.path.exists(config.MCP_CONFIG_URL):
+                        if os.path.exists(os.path.join(router_home, "mcp_config.json")):
+                            config.MCP_CONFIG_URL = os.path.join(router_home, "mcp_config.json")
+                        else:
+                            logger.warning(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist, using default empty config.")
+                            raise FileNotFoundError(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist.")
                 with open(config.MCP_CONFIG_URL, "rt", encoding="utf-8") as f:
                     self.resolve_mcp_configs(mcp_router_json, f.read())
         except Exception as e:
