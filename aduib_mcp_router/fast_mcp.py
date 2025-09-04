@@ -264,9 +264,9 @@ class FastMCP:
         tools_ = [MCPTool(name=info.name, description=info.description, inputSchema=info.parameters,
                           annotations=info.annotations, ) for info in tools]
 
-        # from aduib_mcp_router.libs import app_context
-        # route_manager = app_context.get().router_manager
-        # tools_.extend(route_manager.list_tools())
+        from aduib_mcp_router.libs import app_context
+        route_manager = app_context.get().router_manager
+        tools_.extend(route_manager.list_tools())
         return tools_
 
     def get_context(self) -> Context[ServerSession, object, Request]:
@@ -301,9 +301,9 @@ class FastMCP:
         resources_ = [MCPResource(uri=resource.uri, name=resource.name or "", description=resource.description,
                                   mimeType=resource.mime_type, ) for resource in resources]
 
-        # from aduib_mcp_router.libs import app_context
-        # route_manager = app_context.get().router_manager
-        # resources_.extend(route_manager.list_resources())
+        from aduib_mcp_router.libs import app_context
+        route_manager = app_context.get().router_manager
+        resources_.extend(route_manager.list_resources())
         return resources_
 
     async def list_resource_templates(self) -> list[MCPResourceTemplate]:
@@ -860,9 +860,9 @@ class FastMCP:
             MCPPromptArgument(name=arg.name, description=arg.description, required=arg.required, ) for arg in
             (prompt.arguments or [])], ) for prompt in prompts]
 
-        # from aduib_mcp_router.libs import app_context
-        # route_manager = app_context.get().router_manager
-        # prompts_.extend(route_manager.list_prompts())
+        from aduib_mcp_router.libs import app_context
+        route_manager = app_context.get().router_manager
+        prompts_.extend(route_manager.list_prompts())
         return prompts_
 
     async def get_prompt(
