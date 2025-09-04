@@ -124,8 +124,10 @@ class McpClient:
             self, client_factory: Callable[..., AbstractAsyncContextManager[Any]], method_name: str
     ):
         if self.client_type == 'sse':
+            logger.debug(f"Connecting to MCP server '{self.server.name}' using SSE at {self.server_url}/sse")
             self._streams_context = client_factory(url=self.server_url + "/sse", headers=self.get_client_header())
         elif self.client_type == 'streamableHttp':
+            logger.debug(f"Connecting to MCP server '{self.server.name}' using Streamable HTTP at {self.server_url}/mcp")
             self._streams_context = client_factory(url=self.server_url + "/mcp", headers=self.get_client_header())
         else:
             from aduib_mcp_router.mcp_router.router_manager import RouterManager
@@ -135,6 +137,7 @@ class McpClient:
                 args=sell_env.args,
                 env=sell_env.env,
             )
+            logger.debug(f"Connecting to MCP server '{self.server.name}' using stdio with command: {sell_env.command_run} {' '.join(sell_env.args)}")
             self._streams_context = client_factory(server_params)
         if not self._streams_context:
             raise RuntimeError("Failed to create streams context")

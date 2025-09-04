@@ -178,9 +178,9 @@ class RouterManager:
             self._mcp_client_cache[mcp_server.id] = client
             logger.info(f"MCP client '{mcp_server.name}' type '{client.client_type}' initialized.")
         tasks = []
-        i = 0
-        for mcp_client in self._mcp_client_cache.values():
+        for i, mcp_client in enumerate(self._mcp_client_cache.values()):
             tasks.append(self._run_client(mcp_client, i))
+        # tasks.append(self._run_mcp_server())
         return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_client(self, client: McpClient, index: int):
@@ -189,11 +189,13 @@ class RouterManager:
             async with client:
                 await self._init_mcp_data(client)
                 # maintain the client running
-                index += 1
-                last = index == len(self._mcp_server_cache)
+                last = (index+1) == len(self._mcp_server_cache)
+                logger.debug(f"index: {index}, last: {last}")
                 if last:
                     logger.info("All MCP clients have been processed.")
-                    await self._register_to_discovery_service()
+                    # await self._register_to_discovery_service()
+                    logger.debug(f"Starting message processing loop for server '{client.server.name}'")
+                    await self._run_mcp_server()
                 await client.maintain_message_loop()
         except Exception as e:
             traceback.print_exc()
@@ -202,6 +204,20 @@ class RouterManager:
     async def _init_mcp_data(self, client):
         await self.cache_mcp_features(client.server.id)
         await self.refresh(client.server.id)
+
+    async def _run_mcp_server(self):
+        """Run the MCP server."""
+        from aduib_mcp_router.libs import app_context
+        from aduib_mcp_router.mcp_factory import MCPFactory
+        mcp_factory = MCPFactory.get_mcp_factory()
+        if not self.app:
+            self.app=app_context.get()
+        self.app.mcp=mcp_factory.get_mcp()
+        if self.app.config.DISCOVERY_SERVICE_ENABLED:
+            from aduib_mcp_router.nacos_mcp import NacosMCP
+            nacos_mcp = cast(NacosMCP, self.app.mcp)
+            await nacos_mcp.register_service(self.app.config.TRANSPORT_TYPE)
+        await mcp_factory.run_mcp_server()
 
     async def _register_to_discovery_service(self):
         """Register the router service to the discovery service."""
@@ -292,8 +308,8 @@ class RouterManager:
                 if not ids:
                     return
                 self.ChromaDb.update_data(documents=docs, ids=ids, metadata=metas, collection_id=collection)
-                
-    
+
+
 
     def list_tools(self):
         """List all cached tools from all MCP clients."""
@@ -317,7 +333,7 @@ class RouterManager:
         for resource_list in self._mcp_server_resources_cache.values():
             resources += resource_list
         return resources
-    
+
     def list_prompts(self):
         """List all cached prompts from all MCP clients."""
         prompts = []

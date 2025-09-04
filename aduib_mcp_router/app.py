@@ -12,10 +12,8 @@ if not app:
 async def run_app():
     router_manager = RouterManager.get_router_manager()
     app.router_manager = router_manager
-    mcp_factory = MCPFactory.get_mcp_factory()
-    app.mcp=mcp_factory.get_mcp()
     app_context.set(app)
-    task= [router_manager.init_mcp_clients(), mcp_factory.run_mcp_server()]
+    task= [router_manager.init_mcp_clients()]
     await asyncio.gather(*task, return_exceptions=True)
 
 
