@@ -154,7 +154,7 @@ class RouterManager:
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
     async def _int_all_features(self):
-        """Initialize MCP clients based on the loaded configurations."""
+        """Initialize all features from all MCP clients."""
         callbacks = [self.async_updator]
         tasks=[]
         for i, mcp_server in enumerate(self._mcp_server_cache.values()):
