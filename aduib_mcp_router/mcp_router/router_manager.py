@@ -208,7 +208,8 @@ class RouterManager:
                 try:
                     feature_list = response.result
                     if server_id in feature:
-                        feature[server_id] += feature_list
+                        feature[server_id].clear()
+                        feature[server_id].extend(feature_list)
                     else:
                         feature[server_id] = feature_list
                 except Exception as e:
