@@ -52,7 +52,7 @@ class NacosMCP(FastMCP):
     async def run_stdio_async(self) -> None:
         """Run the server using stdio transport."""
         async with stdio_server() as (read_stream, write_stream):
-            # await self._mcp_server.register_to_nacos("stdio")
+            await self._mcp_server.register_to_nacos("stdio")
             await self._mcp_server.run(
                 read_stream,
                 write_stream,
@@ -62,8 +62,8 @@ class NacosMCP(FastMCP):
     async def run_sse_async(self, mount_path: str | None = None) -> None:
         """Run the server using SSE transport."""
         starlette_app = self.sse_app(mount_path)
-        # await self._mcp_server.register_to_nacos("sse", self.settings.port,
-        #                                          self.settings.sse_path)
+        await self._mcp_server.register_to_nacos("sse", self.settings.port,
+                                                 self.settings.sse_path)
         config = uvicorn.Config(
             starlette_app,
             host=self.settings.host,
@@ -78,9 +78,9 @@ class NacosMCP(FastMCP):
         import uvicorn
 
         starlette_app = self.streamable_http_app()
-        # await self._mcp_server.register_to_nacos("streamable-http",
-        #                                          self.settings.port,
-        #                                          self.settings.streamable_http_path)
+        await self._mcp_server.register_to_nacos("streamable-http",
+                                                 self.settings.port,
+                                                 self.settings.streamable_http_path)
         config = uvicorn.Config(
             starlette_app,
             host=self.settings.host,

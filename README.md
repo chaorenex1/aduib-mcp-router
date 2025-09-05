@@ -12,7 +12,7 @@ Aduib MCP Router 是一个多MCP聚合路由器，支持多种MCP协议，旨在
             "command": "uvx",
             "args": ["aduib-mcp-router"],
             "env": {
-              "MCP_CONFIG_URL": "./config.json"
+              "MCP_CONFIG_PATH": "./config.json"
             }
         }
       }

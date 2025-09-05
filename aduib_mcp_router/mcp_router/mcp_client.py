@@ -52,14 +52,22 @@ class McpClient:
     def get_clientToServerQueue(self) -> asyncio.Queue:
         return self.clientToServerQueue
 
+    def is_initialized(self) -> bool:
+        return self._initialized
+
     async def __aenter__(self) -> Self:
-        self._task_group = anyio.create_task_group()
-        await self._task_group.__aenter__()
-        await self._initialize()
-        self._message_task = self._task_group.start_soon(self._message_handler)
-        self._initialized = True
-        logger.debug(f"MCP client {self.server.name} initialized")
-        return self
+        try:
+            self._task_group = anyio.create_task_group()
+            await self._task_group.__aenter__()
+            await self._initialize()
+            self._message_task = self._task_group.start_soon(self._message_handler)
+            self._initialized = True
+            logger.debug(f"MCP client {self.server.name} initialized")
+            return self
+        except Exception as e:
+            # 确保在初始化失败时清理资源
+            if hasattr(self, '_task_group'):
+                self._task_group.cancel_scope.cancel()
 
     async def __aexit__(
             self,

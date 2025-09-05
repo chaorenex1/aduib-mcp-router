@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import re
 from collections import defaultdict, deque
 from collections.abc import Callable
 from decimal import Decimal
@@ -11,6 +12,7 @@ from types import GeneratorType
 from typing import Any, Literal, Optional, Union
 from uuid import UUID
 
+import unicodedata
 from pydantic import BaseModel
 from pydantic.networks import AnyUrl, NameEmail
 from pydantic.types import SecretBytes, SecretStr
@@ -214,3 +216,24 @@ def jsonable_encoder(
         custom_encoder=custom_encoder,
         sqlalchemy_safe=sqlalchemy_safe,
     )
+
+
+def _normalize_chinese_text(self, text: str) -> str:
+    """标准化中文文本，处理编码、空格、全角半角等问题"""
+    if not text:
+        return ""
+
+    # 统一编码为 UTF-8
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', errors='ignore')
+
+    # 移除不可见字符和多余空格
+    text = re.sub(r'\s+', ' ', text.strip())
+
+    # 全角转半角
+    text = unicodedata.normalize('NFKC', text)
+
+    # 移除所有空格
+    text = text.replace(' ', '').replace('　', '')
+
+    return text.lower()

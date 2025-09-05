@@ -1,6 +1,6 @@
 from .api_key import generate_api_key, verify_api_key, hash_api_key
 from .async_utils import AsyncUtils, CountDownLatch
-from .encoders import jsonable_encoder
+from .encoders import jsonable_encoder,_normalize_chinese_text
 from .module_import_helper import (
     get_subclasses_from_module,
     load_single_subclass_from_source,
@@ -20,6 +20,7 @@ __all__ = [
     "trace_uuid",
     "generate_string",
     "jsonable_encoder",
+    "_normalize_chinese_text",
     "load_yaml_file",
     "load_yaml_files",
     "get_subclasses_from_module",

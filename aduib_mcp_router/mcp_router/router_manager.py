@@ -3,19 +3,23 @@ import json
 import logging
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, Callable, Awaitable
 
 import requests
+from pyexpat import features
 
 from aduib_mcp_router.configs import config
+from aduib_mcp_router.configs.remote.nacos.client import NacosClient
 from aduib_mcp_router.mcp_router.chromadb import ChromaDB
+from aduib_mcp_router.mcp_router.config_loader.config_loader import ConfigLoader
+from aduib_mcp_router.mcp_router.config_loader.remote_config_loader import RemoteConfigLoader
 from aduib_mcp_router.mcp_router.install_bun import install_bun
 from aduib_mcp_router.mcp_router.install_uv import install_uv
 from aduib_mcp_router.mcp_router.mcp_client import McpClient
-from aduib_mcp_router.mcp_router.types import McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv, RouteMessage, \
-    RouteMessageResult
+from aduib_mcp_router.mcp_router.types import McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv, RouteMessage
 from aduib_mcp_router.utils import random_uuid
 
 logger = logging.getLogger(__name__)
@@ -27,12 +31,12 @@ class RouterManager:
     def __init__(self):
 
         self.app = None
+        self._mcp_vector_cache = {}
         self._mcp_server_cache: dict[str, McpServerInfo] = {}
-        self._mcp_client_cache: dict[str, McpClient] = {}
+        # self._mcp_client_cache: dict[str, McpClient] = {}
         self._mcp_server_tools_cache: dict[str, list[Any]] = {}
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
-
 
         self.route_home = self.init_router_home()
         if not self.check_bin_exists('bun'):
@@ -43,7 +47,11 @@ class RouterManager:
             ret_code = install_uv()
             if ret_code != 0:
                 raise EnvironmentError("Failed to install 'uvx' binary.")
-        self.init_mcp_configs(router_home=self.route_home)
+        config_loader = ConfigLoader.get_config_loader(config.MCP_CONFIG_PATH, self.route_home)
+        if config_loader and  isinstance(config_loader, RemoteConfigLoader):
+            self.nacos_client:NacosClient = config_loader.client
+        self.mcp_router_json = os.path.join(self.route_home, "mcp_router.json")
+        self.resolve_mcp_configs(self.mcp_router_json, config_loader.load())
 
         self.ChromaDb = ChromaDB(self.route_home)
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
@@ -90,24 +98,24 @@ class RouterManager:
         try:
             mcp_router_json = os.path.join(router_home, "mcp_router.json")
             # http url
-            if config.MCP_CONFIG_URL.startswith("http://") or config.MCP_CONFIG_URL.startswith("https://"):
-                response = requests.get(url=config.MCP_CONFIG_URL, headers={"User-Agent": config.DEFAULT_USER_AGENT})
+            if config.MCP_CONFIG_PATH.startswith("http://") or config.MCP_CONFIG_PATH.startswith("https://"):
+                response = requests.get(url=config.MCP_CONFIG_PATH, headers={"User-Agent": config.DEFAULT_USER_AGENT})
                 if response.status_code == 200:
                     self.resolve_mcp_configs(mcp_router_json, response.text)
             else:
-                if not os.path.exists(config.MCP_CONFIG_URL):
-                    logger.warning(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist.")
-                    config.MCP_CONFIG_URL =os.getenv("MCP_CONFIG_URL")
-                    if not config.MCP_CONFIG_URL or not os.path.exists(config.MCP_CONFIG_URL):
+                if not os.path.exists(config.MCP_CONFIG_PATH):
+                    logger.warning(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist.")
+                    config.MCP_CONFIG_PATH =os.getenv("MCP_CONFIG_PATH")
+                    if not config.MCP_CONFIG_PATH or not os.path.exists(config.MCP_CONFIG_PATH):
                         if os.path.exists(os.path.join(router_home, "mcp_config.json")):
-                            config.MCP_CONFIG_URL = os.path.join(router_home, "mcp_config.json")
+                            config.MCP_CONFIG_PATH = os.path.join(router_home, "mcp_config.json")
                         else:
-                            logger.warning(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist, using default empty config.")
-                            raise FileNotFoundError(f"MCP configuration file {config.MCP_CONFIG_URL} does not exist.")
-                with open(config.MCP_CONFIG_URL, "rt", encoding="utf-8") as f:
+                            logger.warning(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist, using default empty config.")
+                            raise FileNotFoundError(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist.")
+                with open(config.MCP_CONFIG_PATH, "rt", encoding="utf-8") as f:
                     self.resolve_mcp_configs(mcp_router_json, f.read())
         except Exception as e:
-            logger.error(f"Error accessing MCP configuration file: {config.MCP_CONFIG_URL}: {e}")
+            logger.error(f"Error accessing MCP configuration file: {config.MCP_CONFIG_PATH}: {e}")
             raise e
 
     def resolve_mcp_configs(self, mcp_router_json: str, source: str) -> McpServers:
@@ -173,39 +181,31 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
-    async def init_mcp_clients(self):
+    async def _int_all_features(self):
         """Initialize MCP clients based on the loaded configurations."""
-        for mcp_server in self._mcp_server_cache.values():
-            client = McpClient(mcp_server)
-            self._mcp_client_cache[mcp_server.id] = client
-            logger.info(f"MCP client '{mcp_server.name}' type '{client.client_type}' initialized.")
-        tasks = []
-        for i, mcp_client in enumerate(self._mcp_client_cache.values()):
-            tasks.append(self._run_client(mcp_client, i))
-        # tasks.append(self._run_mcp_server())
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        callbacks = [self.async_updator]
+        for i, mcp_server in enumerate(self._mcp_server_cache.values()):
+            try:
+                await self._int_client_features(mcp_server, i,callbacks)
+            except Exception as e:
+                traceback.print_exc()
+                logger.error(f"Client {mcp_server.name} failed: {e}")
 
-    async def _run_client(self, client: McpClient, index: int):
+    async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
         """run MCP client."""
         try:
-            async with client:
-                await self._init_mcp_data(client)
+                await self.cache_mcp_features(mcp_server.id)
+                await self.refresh(mcp_server.id)
                 # maintain the client running
                 last = (index+1) == len(self._mcp_server_cache)
-                logger.debug(f"index: {index}, last: {last}")
                 if last:
-                    logger.info("All MCP clients have been processed.")
-                    # await self._register_to_discovery_service()
-                    logger.debug(f"Starting message processing loop for server '{client.server.name}'")
-                    await self._run_mcp_server()
-                await client.maintain_message_loop()
+                    if callbacks:
+                        for callback in callbacks:
+                            await callback()
+                # await client.maintain_message_loop()
         except Exception as e:
             traceback.print_exc()
-            logger.error(f"Client {client.server.name} failed: {e}")
-
-    async def _init_mcp_data(self, client):
-        await self.cache_mcp_features(client.server.id)
-        await self.refresh(client.server.id)
+            logger.error(f"Client {mcp_server.name} failed: {e}")
 
     async def _run_mcp_server(self):
         """Run the MCP server."""
@@ -232,54 +232,30 @@ class RouterManager:
             nacos_mcp = cast(NacosMCP, self.app.mcp)
             await nacos_mcp.register_service(self.app.config.TRANSPORT_TYPE)
 
-    async def _broadcast_message(self, message: RouteMessage):
-        """Broadcast a message to all MCP clients."""
-        tasks = []
-        for mcp_client in self._mcp_client_cache.values():
-            tasks.append(mcp_client.send_message(message))
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _send_message_to_client(self, server_id: str, message: RouteMessage):
+    async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 10.0):
         """Send a message to a specific MCP client."""
-        client = self._mcp_client_cache.get(server_id)
-        if client:
-            await client.send_message(message)
-
-    async def _get_responses(self, timeout: float = 10.0) -> dict[str, RouteMessageResult]:
-        """Get responses from all MCP clients within the specified timeout."""
-        responses = {}
-        tasks = []
-
-        for server_id, client in self._mcp_client_cache.items():
-            tasks.append(self._get_client_response(server_id, timeout))
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for server_id, result in zip(self._mcp_client_cache.keys(), results):
-            if not isinstance(result, Exception):
-                responses[server_id] = result
-
-        return responses
-
-    async def _get_client_response(self, server_id: str,
-                                   timeout: float = 10.0) -> Any | None:
-        """Get response from a specific MCP client."""
+        server = self._mcp_server_cache.get(server_id)
         try:
-            client = self._mcp_client_cache.get(server_id)
-            if client:
-                return await client.receive_message(timeout)
+            async with McpClient(server) as client:
+                await client.send_message(message)
+                response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
+                return response
         except Exception as e:
-            logger.error(f"Failed to get response from client {server_id}: {e}")
+            traceback.print_exc()
+            logger.error(f"Failed to send message to client {server_id}: {e}")
             return None
 
     async def cache_mcp_features(self, server_id: str = None):
-        """List all tools from all MCP clients and cache them."""
+        """List all tools from all MCP clients and config_cache them."""
         logger.debug("Listing and caching MCP features.")
         features = [self._mcp_server_tools_cache, self._mcp_server_resources_cache, self._mcp_server_prompts_cache]
         function_names = ['list_tools', 'list_resources', 'list_prompts']
         for feature, function_name in zip(features, function_names):
-            await self._send_message_to_client(server_id, RouteMessage(function_name=function_name, args=(), kwargs={}))
-            response = await self._get_client_response(server_id)
+            response = await self._send_message_wait_response(server_id, RouteMessage(function_name=function_name, args=(), kwargs={}))
+            # 检查响应是否为空
+            if response is None:
+                logger.warning(f"No response received for {function_name} from server {server_id}")
+                continue
             if response.result:
                 try:
                     feature_list = response.result
@@ -293,29 +269,61 @@ class RouterManager:
     async def refresh(self, server_id: str = None):
         """Refresh the cached features and update the vector caches."""
         logger.debug("Refreshing cached features and vector caches.")
+        feature_names = ['tool', 'resource', 'prompt']
         features = [self._mcp_server_tools_cache, self._mcp_server_resources_cache, self._mcp_server_prompts_cache]
         collections = [self.tools_collection, self.resources_collection, self.prompts_collection]
 
-        docs = []
-        ids = []
-        metas = []
-        for feature, collection in zip(features, collections):
-            feature_list = feature.get(server_id, [])
-            for item in feature_list:
-                name = f"{server_id}_{item.name}"
-                des = f"{item.name}_{item.description}"
-                metad = {"server_id": server_id, "original_name": item.name}
-                ids.append(name)
-                docs.append(des)
-                metas.append(metad)
-                if not ids:
-                    return
-                self.ChromaDb.update_data(documents=docs, ids=ids, metadata=metas, collection_id=collection)
+        try:
+            cache=self._mcp_vector_cache
+            for feature, collection,feature_name in zip(features, collections,feature_names):
+                feature_list = feature.get(server_id, [])
+                if not feature_list:
+                    continue
+                for item in feature_list:
+                    docs = []
+                    ids = []
+                    metas = []
+                    name = f"{feature_name}-{server_id}-{item.name}"
+                    if name in cache:
+                        continue
+                    des=item.description if item.description else item.name
+                    ids.append(name)
+                    docs.append(des)
+                    metad = {"server_id": server_id, "original_name": item.name}
+                    metas.append(metad)
+                    if not ids:
+                        return
+                    self._mcp_vector_cache[name] = docs
+                    logger.debug(f"Updating collection '{collection}' with {len(ids)} items from server '{server_id}'.")
+                    self.ChromaDb.update_data(documents=docs, ids=ids, metadata=metas, collection_id=collection)
+                    deleted_id = self.ChromaDb.get_deleted_ids(collection_id=collection,_cache=cache)
+                    if len(deleted_id) > 0:
+                        logger.debug(f"Deleting {len(deleted_id)} items from collection '{collection}' not present in server '{server_id}'.")
+                        self.ChromaDb.delete(ids=deleted_id, collection_id=collection)
+        except Exception as e:
+            traceback.print_exc()
+            logger.error(f"Error during refresh: {e}")
+
+
+    async def async_updator(self):
+        """Asynchronous updater to refresh all cached features and vector caches."""
+        async def _async_updater():
+            while True:
+                try:
+                    for mcp_server in self._mcp_server_cache.values():
+                        await self.cache_mcp_features(mcp_server.id)
+                        await self.refresh(mcp_server.id)
+                except Exception as e:
+                    logger.warning("exception while updating mcp servers: ", exc_info=e)
+                await asyncio.sleep(config.MCP_REFRESH_INTERVAL)
+        asyncio.create_task(_async_updater())
 
 
 
-    def list_tools(self):
+    async def list_tools(self):
         """List all cached tools from all MCP clients."""
+        if len(self._mcp_server_tools_cache)<=0 and len(self._mcp_server_prompts_cache)<=0 and len(self._mcp_server_resources_cache)<=0:
+            await self._int_all_features()
         tools = []
         for tool_list in self._mcp_server_tools_cache.values():
             tools += tool_list
@@ -354,10 +362,17 @@ class RouterManager:
             logger.debug("No metadata found in search_tool result.")
             return query_result
 
-        metadata = metadata_list[0]  # Just take the top result for simplicity
-        server_id = metadata.get("server_id")
-        original_tool_name = metadata.get("original_name")
-        await self._send_message_to_client(server_id, RouteMessage(function_name='call_tool', args=(original_tool_name, arguments), kwargs={}))
-        response = await self._get_client_response(server_id)
-        return response.result
-        raise ValueError(f"Tool {name} not found.")
+        actual_list = [md for md in metadata_list if md.get("original_name") == name]
+        if not actual_list:
+            logger.debug(f"No exact match found for tool name '{name}' in metadata.")
+            raise ValueError(f"Tool {name} not found.")
+
+        result_list = []
+        for metadata in actual_list:
+            server_id = metadata.get("server_id")
+            original_tool_name = metadata.get("original_name")
+            response = await self._send_message_wait_response(server_id, RouteMessage(function_name='call_tool', args=(original_tool_name, arguments), kwargs={}))
+            if response and response.result:
+                result_list.append(response.result)
+        return result_list
+

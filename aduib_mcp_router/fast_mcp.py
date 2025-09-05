@@ -268,7 +268,7 @@ class FastMCP:
 
         from aduib_mcp_router.libs import app_context
         route_manager = app_context.get().router_manager
-        tools_.extend(route_manager.list_tools())
+        tools_.extend(await route_manager.list_tools())
         return tools_
 
     def get_context(self) -> Context[ServerSession, object, Request]:
