@@ -49,10 +49,3 @@ Aduib MCP Router 是一个多MCP聚合路由器，支持多种MCP协议，旨在
    ```bash
    uv sync --dev
     ```
-  
-3. 初始化数据库
-   ```bash
-    uv pip install alembic
-    alembic -c ./alembic/alembic.ini revision --autogenerate -m "init table"
-    alembic -c ./alembic/alembic.ini upgrade head
-   ```
