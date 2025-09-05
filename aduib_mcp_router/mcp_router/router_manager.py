@@ -3,13 +3,11 @@ import json
 import logging
 import os
 import sys
-import threading
 import traceback
 from pathlib import Path
 from typing import Any, cast, Callable, Awaitable
 
 import requests
-from pyexpat import features
 
 from aduib_mcp_router.configs import config
 from aduib_mcp_router.configs.remote.nacos.client import NacosClient
@@ -92,32 +90,6 @@ class RouterManager:
         config.ROUTER_HOME = router_home
         return router_home
 
-    def init_mcp_configs(self, router_home: str):
-        """Initialize MCP configurations."""
-        # 1. check mcp config whether it is existing
-        try:
-            mcp_router_json = os.path.join(router_home, "mcp_router.json")
-            # http url
-            if config.MCP_CONFIG_PATH.startswith("http://") or config.MCP_CONFIG_PATH.startswith("https://"):
-                response = requests.get(url=config.MCP_CONFIG_PATH, headers={"User-Agent": config.DEFAULT_USER_AGENT})
-                if response.status_code == 200:
-                    self.resolve_mcp_configs(mcp_router_json, response.text)
-            else:
-                if not os.path.exists(config.MCP_CONFIG_PATH):
-                    logger.warning(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist.")
-                    config.MCP_CONFIG_PATH =os.getenv("MCP_CONFIG_PATH")
-                    if not config.MCP_CONFIG_PATH or not os.path.exists(config.MCP_CONFIG_PATH):
-                        if os.path.exists(os.path.join(router_home, "mcp_config.json")):
-                            config.MCP_CONFIG_PATH = os.path.join(router_home, "mcp_config.json")
-                        else:
-                            logger.warning(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist, using default empty config.")
-                            raise FileNotFoundError(f"MCP configuration file {config.MCP_CONFIG_PATH} does not exist.")
-                with open(config.MCP_CONFIG_PATH, "rt", encoding="utf-8") as f:
-                    self.resolve_mcp_configs(mcp_router_json, f.read())
-        except Exception as e:
-            logger.error(f"Error accessing MCP configuration file: {config.MCP_CONFIG_PATH}: {e}")
-            raise e
-
     def resolve_mcp_configs(self, mcp_router_json: str, source: str) -> McpServers:
         """Resolve MCP configurations from the given source."""
         mcp_servers_dict = json.loads(source)
@@ -188,17 +160,16 @@ class RouterManager:
         for i, mcp_server in enumerate(self._mcp_server_cache.values()):
             tasks.append(self._int_client_features(mcp_server, i,callbacks))
         try:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks,return_exceptions=True)
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Client failed: {e}")
 
     async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
-        """run MCP client."""
+        """Initialize a single MCP client and cache its features."""
         try:
                 await self.cache_mcp_features(mcp_server.id)
                 await self.refresh(mcp_server.id)
-                # maintain the client running
                 last = (index+1) == len(self._mcp_server_cache)
                 if last:
                     if callbacks:
@@ -208,31 +179,6 @@ class RouterManager:
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Client {mcp_server.name} failed: {e}")
-
-    async def _run_mcp_server(self):
-        """Run the MCP server."""
-        from aduib_mcp_router.libs import app_context
-        from aduib_mcp_router.mcp_factory import MCPFactory
-        mcp_factory = MCPFactory.get_mcp_factory()
-        if not self.app:
-            self.app=app_context.get()
-        self.app.mcp=mcp_factory.get_mcp()
-        if self.app.config.DISCOVERY_SERVICE_ENABLED:
-            from aduib_mcp_router.nacos_mcp import NacosMCP
-            nacos_mcp = cast(NacosMCP, self.app.mcp)
-            await nacos_mcp.register_service(self.app.config.TRANSPORT_TYPE)
-
-        await mcp_factory.run_mcp_server()
-
-    async def _register_to_discovery_service(self):
-        """Register the router service to the discovery service."""
-        from aduib_mcp_router.libs import app_context
-        if not self.app:
-            self.app=app_context.get()
-        if self.app.config.DISCOVERY_SERVICE_ENABLED:
-            from aduib_mcp_router.nacos_mcp import NacosMCP
-            nacos_mcp = cast(NacosMCP, self.app.mcp)
-            await nacos_mcp.register_service(self.app.config.TRANSPORT_TYPE)
 
     async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 10.0):
         """Send a message to a specific MCP client."""
