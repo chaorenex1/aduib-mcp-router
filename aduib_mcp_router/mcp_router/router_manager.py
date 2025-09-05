@@ -184,12 +184,14 @@ class RouterManager:
     async def _int_all_features(self):
         """Initialize MCP clients based on the loaded configurations."""
         callbacks = [self.async_updator]
+        tasks=[]
         for i, mcp_server in enumerate(self._mcp_server_cache.values()):
-            try:
-                await self._int_client_features(mcp_server, i,callbacks)
-            except Exception as e:
-                traceback.print_exc()
-                logger.error(f"Client {mcp_server.name} failed: {e}")
+            tasks.append(self._int_client_features(mcp_server, i,callbacks))
+        try:
+            await asyncio.gather(*tasks)
+        except Exception as e:
+            traceback.print_exc()
+            logger.error(f"Client failed: {e}")
 
     async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
         """run MCP client."""
