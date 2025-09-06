@@ -33,11 +33,11 @@ class NacosSettingsSource(RemoteSettingsSource):
             user_name=configs["NACOS_USERNAME"],
             password=configs["NACOS_PASSWORD"],
         )
-        self.data_id = f".env.{configs['DEPLOY_ENV']}"
-        self.client.register_config_listener(self.data_id)
-        self.remote_configs=self.client.get_all_dicts(self.data_id)
+        self.data_id = f".env-{configs.get('APP_NAME')}-{configs['DEPLOY_ENV']}"
+        self.client.register_config_listener_sync(self.data_id)
+        self.remote_configs=self.client.get_config_sync(self.data_id)
         if not self.remote_configs:
-            self.client.publish_config(self.data_id, json.dumps(configs, indent=4))
+            self.client.publish_config_sync(self.data_id, json.dumps(configs, indent=4))
             self.remote_configs = configs
         # self.client.register_instance(service_name=f"{configs['APP_NAME']}_{get_local_ip()}_{configs['APP_PORT']}",ip=get_local_ip(),port=configs["APP_PORT"])
 

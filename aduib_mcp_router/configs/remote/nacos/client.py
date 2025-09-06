@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import signal
 from concurrent import futures
 from types import CoroutineType, FunctionType
 from typing import Callable
@@ -120,9 +119,7 @@ class NacosClient:
             # context.Process(target=(self.client.add_config_watcher(data_id=data_id,group=self.group,cb=ConfigWatcher(self))),
             #                 name=f"ConfigWatcher").start()
             # self.client.add_config_watcher(data_id=data_id, group=self.group, cb=ConfigWatcher(self))
-            def config_listener(tenant, data_id, group, content):
-                self.config_cache[data_id] = json.loads(content)
-                logger.debug(f"config_listener data_id:{data_id},group:{group},data:{content}")
+            logger.debug(f"config_listener data_id:{data_id}")
             await self.config_service.add_listener(data_id=data_id, group=self.group, listener=self.config_watcher)
             logger.info(f"Config watcher {data_id} registered")
         except Exception as e:

@@ -36,6 +36,7 @@ class McpClient:
         self._session: Optional[ClientSession] = None
         self._streams_context: Optional[AbstractAsyncContextManager[Any]] = None
         self._session_context: Optional[ClientSession] = None
+        self._message_task: Optional[asyncio.Task[None]] = None
 
         # self.exit_stack = ExitStack()
         self.async_exit_stack = AsyncExitStack()
