@@ -19,4 +19,4 @@ RUN  pip install uv \
     && uv venv \
     && uv sync --frozen --no-dev
 
-ENTRYPOINT [".venv/bin/python", "app.py"]
+ENTRYPOINT [".venv/bin/python", "-m", "aduib_mcp_router"]
