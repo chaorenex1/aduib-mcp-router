@@ -70,7 +70,7 @@ class RouterManager:
         router_home: str = ""
         if not config.ROUTER_HOME:
             user_home = os.environ.get('user.home', os.path.expanduser('~'))
-            router_home = os.path.join(user_home, ".aduib_router")
+            router_home = os.path.join(user_home, ".aduib_mcp_router")
             if not os.path.exists(router_home):
                 os.makedirs(router_home, exist_ok=True)
         else:
