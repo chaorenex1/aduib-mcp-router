@@ -180,7 +180,7 @@ class RouterManager:
             traceback.print_exc()
             logger.error(f"Client {mcp_server.name} failed: {e}")
 
-    async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 10.0):
+    async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 600.0):
         """Send a message to a specific MCP client."""
         server = self._mcp_server_cache.get(server_id)
         try:

@@ -1,6 +1,8 @@
 import asyncio
 import logging
+from asyncio import timeout
 from contextlib import AsyncExitStack, AbstractAsyncContextManager
+from datetime import timedelta
 from types import TracebackType
 from typing import Any, Optional, Self, Callable, cast
 
@@ -134,10 +136,10 @@ class McpClient:
     ):
         if self.client_type == 'sse':
             logger.debug(f"Connecting to MCP server '{self.server.name}' using SSE at {self.server_url}/sse")
-            self._streams_context = client_factory(url=self.server_url + "/sse", headers=self.get_client_header())
+            self._streams_context = client_factory(url=self.server_url + "/sse", headers=self.get_client_header(),timeout=600)
         elif self.client_type == 'streamableHttp':
             logger.debug(f"Connecting to MCP server '{self.server.name}' using Streamable HTTP at {self.server_url}/mcp")
-            self._streams_context = client_factory(url=self.server_url + "/mcp", headers=self.get_client_header())
+            self._streams_context = client_factory(url=self.server_url + "/mcp", headers=self.get_client_header(),timeout=timedelta(seconds=600))
         else:
             from aduib_mcp_router.mcp_router.router_manager import RouterManager
             sell_env: ShellEnv = RouterManager.get_shell_env(args=self.server.args)
