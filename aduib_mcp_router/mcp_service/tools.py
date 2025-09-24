@@ -27,3 +27,23 @@ def search_tool(query: str) -> dict[str, Any]:
     tool_info = router_manager.get_tool(original_tool_name, server_id)
 
     return {"server_info": mcp_server_info, "tool_info": tool_info}
+
+
+@mcp.tool()
+async def call_tool(tool_name:str):
+    """Call a tool by its name."""
+    logger.debug(f"call_tool called with tool_name: {tool_name}")
+    query_result = router_manager.ChromaDb.query(router_manager.tools_collection, tool_name, 10)
+    metadatas = query_result.get("metadatas")
+    metadata_list = metadatas[0] if metadatas else []
+    if not metadata_list:
+        logger.debug("No metadata found in search_tool result.")
+        return query_result
+
+    results=[]
+    for metadata in metadatas if metadatas else []:
+        server_id = metadata.get("server_id")
+        original_tool_name = metadata.get("original_name")
+        tool_info = router_manager.get_tool(original_tool_name, server_id)
+        results.append(router_manager.call_tool(original_tool_name, tool_info.inputSchema))
+    return results

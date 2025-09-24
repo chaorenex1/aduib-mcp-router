@@ -4,8 +4,8 @@ from aduib_mcp_router.app import app
 mcp= app.mcp
 router_manager= app.router_manager
 
-@mcp.prompt(name="call_tool_prompt", description="A prompt to call a tool by name with arguments.")
-def source_tool_prompt(query: str) -> str:
+@mcp.prompt(name="call_tool_prompt", description="A prompt to call a tool by name.")
+def source_tool_prompt(name: str) -> str:
     """A prompt to call a tool by name with arguments."""
     prompt= f"""In this environment you have access to a set of tools you can use to answer the user's question. You can use one or more tools per message, and will receive the result of that tool use in the user's response. You use tools step-by-step to accomplish a given task, with each tool use informed by the result of the previous tool use.
 

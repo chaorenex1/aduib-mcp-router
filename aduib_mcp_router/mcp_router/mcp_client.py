@@ -260,7 +260,7 @@ class McpClient:
                 resp = await self._session.read_resource(uri=message.args[0])
                 result = resp.contents
         except Exception as e:
-            logger.error(f"Error handling message: {e}")
+            logger.error(f"Error handling message: {e}, function: {message.function_name}, args: {message.args}")
         return RouteMessageResult(function_name=message.function_name, result=result)
 
     async def maintain_message_loop(self):
