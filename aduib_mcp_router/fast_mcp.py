@@ -305,7 +305,7 @@ class FastMCP:
 
         from aduib_mcp_router.libs import app_context
         route_manager = app_context.get().router_manager
-        resources_.extend(route_manager.list_resources())
+        resources_.extend(await route_manager.list_resources())
         return resources_
 
     async def list_resource_templates(self) -> list[MCPResourceTemplate]:
@@ -864,7 +864,7 @@ class FastMCP:
 
         from aduib_mcp_router.libs import app_context
         route_manager = app_context.get().router_manager
-        prompts_.extend(route_manager.list_prompts())
+        prompts_.extend(await route_manager.list_prompts())
         return prompts_
 
     async def get_prompt(

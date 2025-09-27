@@ -3,11 +3,8 @@ import json
 import logging
 import os
 import sys
-import traceback
 from pathlib import Path
-from typing import Any, cast, Callable, Awaitable
-
-import requests
+from typing import Any, Callable, Awaitable
 
 from aduib_mcp_router.configs import config
 from aduib_mcp_router.configs.remote.nacos.client import NacosClient
@@ -55,6 +52,7 @@ class RouterManager:
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
         self.prompts_collection = self.ChromaDb.create_collection(collection_name="prompts")
         self.resources_collection = self.ChromaDb.create_collection(collection_name="resources")
+        self.async_updator()
 
     @classmethod
     def get_router_manager(cls):
@@ -153,16 +151,17 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
-    async def _int_all_features(self):
-        """Initialize all features from all MCP clients."""
-        callbacks = [self.async_updator]
+    async def _init_features(self, feature_type: str):
+        """Initialize MCP clients and cache their features."""
+        # callbacks = [self.async_updator]
+        callbacks = []
         tasks=[]
         for i, mcp_server in enumerate(self._mcp_server_cache.values()):
-            tasks.append(self._int_client_features(mcp_server, i,callbacks))
+            tasks.append(self.cache_mcp_features(feature_type,mcp_server.id))
+            tasks.append(self.refresh(feature_type,mcp_server.id))
         try:
             await asyncio.gather(*tasks,return_exceptions=True)
         except Exception as e:
-            traceback.print_exc()
             logger.error(f"Client failed: {e}")
 
     async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
@@ -177,7 +176,6 @@ class RouterManager:
                             await callback()
                 # await client.maintain_message_loop()
         except Exception as e:
-            traceback.print_exc()
             logger.error(f"Client {mcp_server.name} failed: {e}")
 
     async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 600.0):
@@ -185,20 +183,37 @@ class RouterManager:
         server = self._mcp_server_cache.get(server_id)
         try:
             async with McpClient(server) as client:
-                await client.send_message(message)
-                response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
-                return response
+                try:
+                    await client.send_message(message)
+                    response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
+                    return response
+                except asyncio.TimeoutError:
+                    await client.__aexit__(asyncio.TimeoutError, None, None)
+                    logger.error(f"Timeout waiting for response from client {server_id}")
+                    return None
+                except Exception as e:
+                    await client.__aexit__(Exception, e, None)
+                    logger.error(f"Error communicating with client {server_id}: {e}")
+                    return None
         except Exception as e:
-            traceback.print_exc()
             logger.error(f"Failed to send message to client {server_id}: {e}")
             return None
 
-    async def cache_mcp_features(self, server_id: str = None):
+    async def cache_mcp_features(self,feature_type: str, server_id: str = None):
         """List all tools from all MCP clients and config_cache them."""
         logger.debug("Listing and caching MCP features.")
-        features = [self._mcp_server_tools_cache, self._mcp_server_resources_cache, self._mcp_server_prompts_cache]
-        function_names = ['list_tools', 'list_resources', 'list_prompts']
-        for feature, function_name in zip(features, function_names):
+        feature_cache = []
+        function_names = []
+        if feature_type == 'tool':
+            feature_cache = [self._mcp_server_tools_cache]
+            function_names = ['list_tools']
+        elif feature_type == 'resource':
+            feature_cache = [self._mcp_server_resources_cache]
+            function_names = ['list_resources']
+        elif feature_type == 'prompt':
+            feature_cache = [self._mcp_server_prompts_cache]
+            function_names = ['list_prompts']
+        for feature, function_name in zip(feature_cache, function_names):
             response = await self._send_message_wait_response(server_id, RouteMessage(function_name=function_name, args=(), kwargs={}))
             # 检查响应是否为空
             if response is None:
@@ -215,16 +230,28 @@ class RouterManager:
                 except Exception as e:
                     logger.error(f"Failed to parse {function_name} from server {server_id}: {e}")
 
-    async def refresh(self, server_id: str = None):
+    async def refresh(self,feature_type: str, server_id: str = None):
         """Refresh the cached features and update the vector caches."""
         logger.debug("Refreshing cached features and vector caches.")
-        feature_names = ['tool', 'resource', 'prompt']
-        features = [self._mcp_server_tools_cache, self._mcp_server_resources_cache, self._mcp_server_prompts_cache]
-        collections = [self.tools_collection, self.resources_collection, self.prompts_collection]
+        features_cache = []
+        collections = []
+        feature_names = []
+        if feature_type == 'tool':
+            features_cache = [self._mcp_server_tools_cache]
+            collections = [self.tools_collection]
+            feature_names = ['tool']
+        elif feature_type == 'resource':
+            features_cache = [self._mcp_server_resources_cache]
+            collections = [self.resources_collection]
+            feature_names = ['resource']
+        elif feature_type == 'prompt':
+            features_cache = [self._mcp_server_prompts_cache]
+            collections = [self.prompts_collection]
+            feature_names = ['prompt']
 
         try:
             cache=self._mcp_vector_cache
-            for feature, collection,feature_name in zip(features, collections,feature_names):
+            for feature, collection,feature_name in zip(features_cache, collections,feature_names):
                 feature_list = feature.get(server_id, [])
                 if not feature_list:
                     continue
@@ -250,29 +277,33 @@ class RouterManager:
                         logger.debug(f"Deleting {len(deleted_id)} items from collection '{collection}' not present in server '{server_id}'.")
                         self.ChromaDb.delete(ids=deleted_id, collection_id=collection)
         except Exception as e:
-            traceback.print_exc()
             logger.error(f"Error during refresh: {e}")
 
 
-    async def async_updator(self):
+    def async_updator(self):
         """Asynchronous updater to refresh all cached features and vector caches."""
         async def _async_updater():
+            _features=['tool','resource','prompt']
             while True:
                 try:
-                    for mcp_server in self._mcp_server_cache.values():
-                        await self.cache_mcp_features(mcp_server.id)
-                        await self.refresh(mcp_server.id)
+                    await asyncio.sleep(config.MCP_REFRESH_INTERVAL)
+                except Exception as e:
+                    logger.warning("exception while sleeping: ", exc_info=e)
+                try:
+                    for feature in _features:
+                        for mcp_server in self._mcp_server_cache.values():
+                            await self.cache_mcp_features(feature,mcp_server.id)
+                            await self.refresh(feature,mcp_server.id)
                 except Exception as e:
                     logger.warning("exception while updating mcp servers: ", exc_info=e)
-                await asyncio.sleep(config.MCP_REFRESH_INTERVAL)
         asyncio.create_task(_async_updater())
 
 
 
     async def list_tools(self):
         """List all cached tools from all MCP clients."""
-        if len(self._mcp_server_tools_cache)<=0 and len(self._mcp_server_prompts_cache)<=0 and len(self._mcp_server_resources_cache)<=0:
-            await self._int_all_features()
+        if len(self._mcp_server_tools_cache)<=0:
+            await self._init_features("tool")
         tools = []
         for tool_list in self._mcp_server_tools_cache.values():
             tools += tool_list
@@ -287,15 +318,19 @@ class RouterManager:
                     return tool
         return None
 
-    def list_resources(self):
+    async def list_resources(self):
         """List all cached resources from all MCP clients."""
+        if len(self._mcp_server_resources_cache)<=0:
+            await self._init_features("resource")
         resources = []
         for resource_list in self._mcp_server_resources_cache.values():
             resources += resource_list
         return resources
 
-    def list_prompts(self):
+    async def list_prompts(self):
         """List all cached prompts from all MCP clients."""
+        if len(self._mcp_server_prompts_cache)<=0:
+            await self._init_features("prompt")
         prompts = []
         for prompt_list in self._mcp_server_prompts_cache.values():
             prompts += prompt_list
