@@ -188,11 +188,9 @@ class RouterManager:
                     response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
                     return response
                 except asyncio.TimeoutError:
-                    await client.__aexit__(asyncio.TimeoutError, None, None)
                     logger.error(f"Timeout waiting for response from client {server_id}")
                     return None
                 except Exception as e:
-                    await client.__aexit__(Exception, e, None)
                     logger.error(f"Error communicating with client {server_id}: {e}")
                     return None
         except Exception as e:
