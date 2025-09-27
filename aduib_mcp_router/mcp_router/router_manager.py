@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
@@ -191,6 +192,7 @@ class RouterManager:
                     logger.error(f"Timeout waiting for response from client {server_id}")
                     return None
                 except Exception as e:
+                    traceback.print_exc()
                     logger.error(f"Error communicating with client {server_id}: {e}")
                     return None
         except Exception as e:
