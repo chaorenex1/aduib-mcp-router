@@ -302,7 +302,7 @@ class RouterManager:
 
     async def list_tools(self):
         """List all cached tools from all MCP clients."""
-        if len(self._mcp_server_tools_cache)<=0:
+        if len(self._mcp_server_tools_cache.values())<=0:
             await self._init_features("tool")
         tools = []
         for tool_list in self._mcp_server_tools_cache.values():
@@ -320,7 +320,7 @@ class RouterManager:
 
     async def list_resources(self):
         """List all cached resources from all MCP clients."""
-        if len(self._mcp_server_resources_cache)<=0:
+        if len(self._mcp_server_resources_cache.values())<=0:
             await self._init_features("resource")
         resources = []
         for resource_list in self._mcp_server_resources_cache.values():
@@ -329,7 +329,7 @@ class RouterManager:
 
     async def list_prompts(self):
         """List all cached prompts from all MCP clients."""
-        if len(self._mcp_server_prompts_cache)<=0:
+        if len(self._mcp_server_prompts_cache.values())<=0:
             await self._init_features("prompt")
         prompts = []
         for prompt_list in self._mcp_server_prompts_cache.values():
