@@ -29,10 +29,11 @@ class RouterManager:
         self.app = None
         self._mcp_vector_cache = {}
         self._mcp_server_cache: dict[str, McpServerInfo] = {}
-        # self._mcp_client_cache: dict[str, McpClient] = {}
+        self._mcp_client_cache: dict[str, McpClient] = {}
         self._mcp_server_tools_cache: dict[str, list[Any]] = {}
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
+        self._clients_initialized = False
 
         self.route_home = self.init_router_home()
         if not self.check_bin_exists('bun'):
@@ -152,6 +153,45 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
+    async def initialize_clients(self):
+        """Initialize all MCP clients and keep them connected."""
+        if self._clients_initialized:
+            logger.info("Clients already initialized, skipping...")
+            return
+
+        logger.info(f"Initializing {len(self._mcp_server_cache)} MCP clients...")
+        for server_id, server in self._mcp_server_cache.items():
+            try:
+                logger.info(f"Initializing client for server '{server.name}' (ID: {server_id})")
+                client = McpClient(server)
+                await client.__aenter__()
+                self._mcp_client_cache[server_id] = client
+                logger.info(f"Client '{server.name}' initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize client for server '{server.name}': {e}")
+                traceback.print_exc()
+
+        self._clients_initialized = True
+        logger.info(f"Successfully initialized {len(self._mcp_client_cache)} MCP clients")
+
+    async def cleanup_clients(self):
+        """Clean up all MCP client connections."""
+        logger.info("Cleaning up MCP clients...")
+        for server_id, client in list(self._mcp_client_cache.items()):
+            try:
+                logger.info(f"Cleaning up client for server ID: {server_id}")
+                await client.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error cleaning up client {server_id}: {e}")
+
+        self._mcp_client_cache.clear()
+        self._clients_initialized = False
+        logger.info("All MCP clients cleaned up")
+
+    def get_client(self, server_id: str) -> McpClient | None:
+        """Get an existing MCP client by server ID."""
+        return self._mcp_client_cache.get(server_id)
+
     async def _init_features(self, feature_type: str):
         """Initialize MCP clients and cache their features."""
         # callbacks = [self.async_updator]
@@ -181,22 +221,25 @@ class RouterManager:
 
     async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 600.0):
         """Send a message to a specific MCP client."""
-        server = self._mcp_server_cache.get(server_id)
+        # Ensure clients are initialized
+        if not self._clients_initialized:
+            await self.initialize_clients()
+
+        client = self._mcp_client_cache.get(server_id)
+        if not client:
+            logger.error(f"No client found for server ID {server_id}")
+            return None
+
         try:
-            async with McpClient(server) as client:
-                try:
-                    await client.send_message(message)
-                    response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
-                    return response
-                except asyncio.TimeoutError:
-                    logger.error(f"Timeout waiting for response from client {server_id}")
-                    return None
-                except Exception as e:
-                    traceback.print_exc()
-                    logger.error(f"Error communicating with client {server_id}: {e}")
-                    return None
+            await client.send_message(message)
+            response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout waiting for response from client {server_id}")
+            return None
         except Exception as e:
-            logger.error(f"Failed to send message to client {server_id}: {e}")
+            traceback.print_exc()
+            logger.error(f"Error communicating with client {server_id}: {e}")
             return None
 
     async def cache_mcp_features(self,feature_type: str, server_id: str = None):

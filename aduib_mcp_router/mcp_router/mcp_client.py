@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from asyncio import timeout
 from contextlib import AsyncExitStack, AbstractAsyncContextManager
 from datetime import timedelta
 from types import TracebackType
@@ -63,7 +62,7 @@ class McpClient:
             self._task_group = anyio.create_task_group()
             await self._task_group.__aenter__()
             await self._initialize()
-            self._message_task = self._task_group.start_soon(self._message_handler)
+            self._task_group.start_soon(self._message_handler)
             self._initialized = True
             logger.debug(f"MCP client {self.server.name} initialized")
             return self

@@ -12,6 +12,7 @@ if not app:
 async def run_mcp_server():
     """Run the MCP server."""
     from aduib_mcp_router.mcp_factory import MCPFactory
+
     mcp_factory = MCPFactory.get_mcp_factory()
     mcp=mcp_factory.get_mcp()
     app.mcp = mcp
@@ -20,6 +21,10 @@ async def run_mcp_server():
     app.router_manager = router_manager
     app_context.set(app)
 
+    # Set router manager on factory for lifespan management
+    mcp_factory.set_router_manager(router_manager)
+
+    # Run the MCP server (lifespan will handle client initialization and cleanup)
     await mcp_factory.run_mcp_server()
 
 # async def run_app():

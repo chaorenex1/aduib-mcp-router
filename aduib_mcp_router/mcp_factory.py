@@ -1,5 +1,7 @@
 import logging
 import os
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from aduib_mcp_router.configs import config
 from .fast_mcp import FastMCP
@@ -9,6 +11,7 @@ class MCPFactory:
     """ Factory class to create and manage FastMCP instances."""
     def __init__(self):
         self.mcp = self.init_fast_mcp()
+        self.router_manager = None
 
     def get_mcp(self)->FastMCP:
         return self.mcp
@@ -17,11 +20,41 @@ class MCPFactory:
     def get_mcp_factory(cls)->'MCPFactory':
         return cls()
 
+    def set_router_manager(self, router_manager):
+        """Set the router manager for lifecycle management."""
+        self.router_manager = router_manager
+
+    @asynccontextmanager
+    async def create_lifespan(self, mcp: FastMCP) -> AsyncIterator[None]:
+        """Lifespan context manager for MCP client initialization and cleanup."""
+        log.info("Starting MCP application lifespan...")
+
+        # Initialize MCP clients on startup
+        if self.router_manager:
+            log.info("Initializing MCP clients...")
+            await self.router_manager.initialize_clients()
+            log.info("MCP clients initialized successfully")
+
+        try:
+            yield
+        finally:
+            # Cleanup MCP clients on shutdown
+            if self.router_manager:
+                log.info("Cleaning up MCP clients...")
+                await self.router_manager.cleanup_clients()
+                log.info("MCP clients cleaned up successfully")
+
     def init_fast_mcp(self)->FastMCP:
         mcp= None
         if not config.DISCOVERY_SERVICE_ENABLED:
             from aduib_mcp_router.fast_mcp import FastMCP
-            mcp = FastMCP(name=config.APP_NAME,instructions=config.APP_DESCRIPTION,version=config.APP_VERSION,auth_server_provider=None)
+            mcp = FastMCP(
+                name=config.APP_NAME,
+                instructions=config.APP_DESCRIPTION,
+                version=config.APP_VERSION,
+                auth_server_provider=None,
+                lifespan=self.create_lifespan
+            )
         else:
             if config.DISCOVERY_SERVICE_TYPE=="nacos":
                 from nacos_mcp_wrapper.server.nacos_settings import NacosSettings
@@ -37,11 +70,14 @@ class MCPFactory:
                     SERVICE_META_DATA={"transport": config.TRANSPORT_TYPE},
                 )
                 from nacos_mcp import NacosMCP
-                mcp = NacosMCP(name=config.APP_NAME,
-                               nacos_settings=nacos_settings,
-                               instructions=config.APP_DESCRIPTION,
-                               version=config.APP_VERSION,
-                               auth_server_provider=None)
+                mcp = NacosMCP(
+                    name=config.APP_NAME,
+                    nacos_settings=nacos_settings,
+                    instructions=config.APP_DESCRIPTION,
+                    version=config.APP_VERSION,
+                    auth_server_provider=None,
+                    lifespan=self.create_lifespan
+                )
         log.info("fast mcp initialized successfully")
         return mcp
 
