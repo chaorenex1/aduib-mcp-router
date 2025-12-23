@@ -263,11 +263,15 @@ class RouterManager:
 
         for server_id, server in self._mcp_server_cache.items():
             logger.debug(f"Initializing client for server '{server.name}' (ID: {server_id})...")
-            client = await self.get_or_create_client(server_id)
-            if client is not None:
-                success.append(server.name)
-            else:
+            try:
+                client = await self.get_or_create_client(server_id)
+                if client is not None:
+                    success.append(server.name)
+                else:
+                    failed.append(server.name)
+            except Exception as e:  # noqa: BLE001
                 failed.append(server.name)
+                logger.error(f"Error initializing client for server '{server.name}': {e}")
 
         self._clients_initialized = True
         logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
