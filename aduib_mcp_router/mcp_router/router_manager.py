@@ -62,7 +62,7 @@ class RouterManager:
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
         self.prompts_collection = self.ChromaDb.create_collection(collection_name="prompts")
         self.resources_collection = self.ChromaDb.create_collection(collection_name="resources")
-        self.async_updator()
+        # self.async_updator()
 
     @classmethod
     def get_router_manager(cls):
