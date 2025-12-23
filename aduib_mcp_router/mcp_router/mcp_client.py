@@ -37,9 +37,11 @@ class McpClient:
         self._session: Optional[ClientSession] = None
         self._streams_context: Optional[AbstractAsyncContextManager[Any]] = None
         self._session_context: Optional[ClientSession] = None
-        self._message_task: Optional[asyncio.Task[None]] = None
 
-        # self.exit_stack = ExitStack()
+        # Task group managing background tasks (e.g. message handler)
+        self._task_group: anyio.abc.TaskGroup | None = None
+
+        # AsyncExitStack to manage underlying stream/session contexts
         self.async_exit_stack = AsyncExitStack()
 
         # Whether the client has been initialized
@@ -58,18 +60,30 @@ class McpClient:
         return self._initialized
 
     async def __aenter__(self) -> Self:
+        # Create and enter the anyio TaskGroup in this task
+        self._task_group = anyio.create_task_group()
+        await self._task_group.__aenter__()
+
         try:
-            self._task_group = anyio.create_task_group()
-            await self._task_group.__aenter__()
+            # Initialize underlying MCP connection/session
             await self._initialize()
+
+            # Start background message handler within the task group
             self._task_group.start_soon(self._message_handler)
+
             self._initialized = True
             logger.debug(f"MCP client {self.server.name} initialized")
             return self
-        except Exception as e:
-            # 确保在初始化失败时清理资源
-            if hasattr(self, '_task_group'):
-                self._task_group.cancel_scope.cancel()
+        except BaseException:
+            # If initialization fails, ensure proper cleanup in this task
+            self._initialized = False
+            try:
+                await self.cleanup()
+            finally:
+                if self._task_group is not None:
+                    await self._task_group.__aexit__(*sys.exc_info())
+                    self._task_group = None
+            raise
 
     async def __aexit__(
             self,
@@ -77,36 +91,37 @@ class McpClient:
             exc_val: BaseException | None,
             exc_tb: TracebackType | None,
     ) -> bool | None:
-        await self.cleanup()
-        # Using BaseSession as a context manager should not block on exit (this
-        # would be very surprising behavior), so make sure to cancel the tasks
-        # in the task group.
-        self._task_group.cancel_scope.cancel()
-        logger.debug(f"MCP client {self.server.name} exited")
-        return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
+        # Signal message loop to stop
+        self._initialized = False
 
-    # def __enter__(self):
-    #     self._initialize()
-    #     self._initialized = True
-    #     return self
-    #
-    # def __exit__(
-    #     self, exc_type: Optional[type], exc_value: Optional[BaseException], traceback: Optional[TracebackType]
-    # ):
-    #     self.cleanup()
+        # Request cancellation of all tasks in the task group
+        if self._task_group is not None:
+            try:
+                self._task_group.cancel_scope.cancel()
+            except Exception:
+                logger.exception("Error cancelling task group cancel_scope")
+
+        # First, let the task group finish its tasks and exit
+        tg_result: bool | None = None
+        if self._task_group is not None:
+            try:
+                tg_result = await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
+            finally:
+                self._task_group = None
+
+        # Then cleanup underlying streams/session via AsyncExitStack
+        await self.cleanup()
+
+        logger.debug(f"MCP client {self.server.name} exited")
+        return tg_result
 
     async def cleanup(self):
-        """Clean up resources"""
-        self._initialized = False
+        """Clean up resources (streams/session) without managing task group."""
         try:
-            if self._message_task:
-                self._message_task.cancel()
-                await self._message_task
             # ExitStack will handle proper cleanup of all managed context managers
             await self.async_exit_stack.aclose()
-        except Exception as e:
-            logging.exception("Error during cleanup")
-            raise ValueError(f"Error during cleanup: {e}")
+        except Exception:
+            logger.exception("Error during cleanup")
         finally:
             self._session = None
             self._session_context = None
