@@ -123,34 +123,46 @@ class RouterManager:
 
     @classmethod
     def get_shell_env(cls, args: McpServerInfoArgs) -> ShellEnv:
-        """Get shell environment variables."""
+        """Get shell environment variables.
+
+        For stdio MCP servers we prefer to execute the actual binary (uvx/bunx/python/etc.)
+        directly, instead of always going through an interactive shell like cmd/bash.
+        This helps avoid zombie-like child shells and makes process lifetime clearer.
+        """
         shell_env = ShellEnv()
-        args_list = []
-        if sys.platform == 'win32':
-            shell_env.command_get_env = 'set'
-            shell_env.command_run = 'cmd.exe'
-            args_list.append('/c')
-        else:
-            shell_env.command_get_env = 'env'
-            shell_env.command_run = '/bin/bash'
-            args_list.append('-ilc')
-        if args.command and args.command == 'npx':
-            shell_env.bin_path = cls.get_binary('bun')
-            # shell_env.command_run=shell_env.bin_path
-            args_list.append(shell_env.bin_path)
-            for i, arg in enumerate(args.args):
-                if arg == '-y' or arg == '--yes':
-                    args_list.append('x')
-                else:
-                    args_list.append(arg)
-        if args.command and (args.command == 'uvx' or args.command == 'uv'):
-            shell_env.bin_path = cls.get_binary('uvx')
-            # shell_env.command_run = shell_env.bin_path
-            args_list.append(shell_env.bin_path)
-            for i, arg in enumerate(args.args):
-                args_list.append(arg)
-        shell_env.args = args_list
+        args_list: list[str] = []
+
+        # Default: no wrapper shell, run command directly when possible
         shell_env.env = args.env
+
+        # uvx / uv
+        if args.command and (args.command == 'uvx' or args.command == 'uv'):
+            # Use the uvx binary installed under ROUTER_HOME/bin
+            shell_env.command_run = cls.get_binary('uvx')
+            for arg in args.args:
+                args_list.append(arg)
+        # npx / bunx style commands
+        elif args.command and args.command == 'npx':
+            # Use bun as the underlying runner when available
+            shell_env.command_run = cls.get_binary('bun')
+            # Map "npx" semantics onto "bun x" / "bunx": insert the subcommand marker
+            for arg in args.args:
+                if arg in ('-y', '--yes'):
+                    # bun x does not need -y/--yes, translate to x
+                    continue
+                args_list.append(arg)
+            # Prepend the "x" subcommand for bun
+            args_list.insert(0, 'x')
+        else:
+            # Fallback: run the given command directly (python, node, etc.)
+            # On Windows we still avoid wrapping in cmd.exe here to reduce
+            # the chance of leaving zombie shells around; the underlying
+            # subprocess will execute the binary specified in args.command.
+            shell_env.command_run = args.command
+            for arg in args.args:
+                args_list.append(arg)
+
+        shell_env.args = args_list
         return shell_env
 
     @classmethod
@@ -162,14 +174,17 @@ class RouterManager:
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
     async def _create_client(self, server_id: str) -> McpClient | None:
-        """Lazily create and initialize a client for a single server with timeout and basic circuit breaking."""
+        """Lazily create and initialize a client for a single server.
+
+        This version initializes one MCP at a time (no concurrency semaphore)
+        to avoid overwhelming the host with many simultaneous stdio processes.
+        """
         server = self._mcp_server_cache.get(server_id)
         if not server:
             logger.error(f"No MCP server config found for id={server_id}")
             return None
 
         status = self._mcp_server_status.setdefault(server_id, {})
-        # Simple circuit-breaker: if recently failed too many times, skip for a while
         fail_count = status.get("fail_count", 0)
         circuit_until = status.get("circuit_until")
         now = asyncio.get_event_loop().time()
@@ -177,7 +192,6 @@ class RouterManager:
             logger.warning(f"Skipping initialization for server {server.name} (circuit open)")
             return None
 
-        # Default init timeout from config or fallback
         init_timeout = getattr(config, "MCP_INIT_TIMEOUT", 30.0)
 
         async def _do_init() -> McpClient | None:
@@ -200,9 +214,7 @@ class RouterManager:
                 return None
 
         try:
-            if self._init_semaphore is not None:
-                async with self._init_semaphore:
-                    return await asyncio.wait_for(_do_init(), timeout=init_timeout)
+            # One-by-one init: no concurrency semaphore here
             return await asyncio.wait_for(_do_init(), timeout=init_timeout)
         except asyncio.TimeoutError:
             logger.error(f"Timeout while initializing client for server '{server.name}'")
@@ -224,9 +236,10 @@ class RouterManager:
         return client
 
     async def initialize_clients(self):
-        """Initialize MCP clients for all configured servers with concurrency and timeouts.
+        """Initialize MCP clients for all configured servers sequentially.
 
-        This is a best-effort pre-warm; failures for individual servers won't block others.
+        This strictly uses a one-by-one initialization strategy to avoid
+        spawning many stdio MCP processes at the same time.
         """
         if self._clients_initialized:
             logger.info("Clients already initialized, skipping pre-warm...")
@@ -237,20 +250,13 @@ class RouterManager:
             self._clients_initialized = True
             return
 
-        logger.info(f"Pre-warming MCP clients for {len(self._mcp_server_cache)} servers...")
+        logger.info(f"Sequentially initializing MCP clients for {len(self._mcp_server_cache)} servers...")
 
-        async def _init_single(server_id: str):
+        for server_id in self._mcp_server_cache.keys():
             await self.get_or_create_client(server_id)
 
-        tasks = [
-            _init_single(server_id)
-            for server_id in self._mcp_server_cache.keys()
-        ]
-        # Best-effort: collect all results but don't raise on individual failures
-        await asyncio.gather(*tasks, return_exceptions=True)
-
         self._clients_initialized = True
-        logger.info(f"Pre-warm complete; active clients: {len(self._mcp_client_cache)}")
+        logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
