@@ -48,11 +48,12 @@ class MCPFactory:
         mcp= None
         if not config.DISCOVERY_SERVICE_ENABLED:
             from aduib_mcp_router.fast_mcp import FastMCP
+            from aduib_mcp_router.libs.api_key_auth import ApiKeyAuthorizationServerProvider
             mcp = FastMCP(
                 name=config.APP_NAME,
                 instructions=config.APP_DESCRIPTION,
                 version=config.APP_VERSION,
-                auth_server_provider=None,
+                auth_server_provider=ApiKeyAuthorizationServerProvider() if config.AUTH_ENABLED else None,
                 lifespan=self.create_lifespan
             )
         else:
@@ -70,12 +71,13 @@ class MCPFactory:
                     SERVICE_META_DATA={"transport": config.TRANSPORT_TYPE},
                 )
                 from nacos_mcp import NacosMCP
+                from aduib_mcp_router.libs.api_key_auth import ApiKeyAuthorizationServerProvider
                 mcp = NacosMCP(
                     name=config.APP_NAME,
                     nacos_settings=nacos_settings,
                     instructions=config.APP_DESCRIPTION,
                     version=config.APP_VERSION,
-                    auth_server_provider=None,
+                    auth_server_provider=ApiKeyAuthorizationServerProvider() if config.AUTH_ENABLED else None,
                     lifespan=self.create_lifespan
                 )
         log.info("fast mcp initialized successfully")

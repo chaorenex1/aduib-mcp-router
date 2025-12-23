@@ -36,6 +36,7 @@ class DeploymentConfig(BaseSettings):
 
 class AuthConfig(BaseSettings):
     AUTH_ENABLED: bool = Field(default=False, description="Enable authentication")
+    AUTH_KEY: str = Field(default="aduib_mcp_router_secret_key", description="Authentication key")
 
 
 class MCPConfig(BaseSettings):
