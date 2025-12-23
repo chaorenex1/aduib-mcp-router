@@ -329,7 +329,7 @@ class RouterManager:
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        logger.info(f"Feature '{feature_type}' init success MCPs: {success}")
+        logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
         if failed:
             logger.warning(f"Feature '{feature_type}' init failed MCPs: {failed}")
 
