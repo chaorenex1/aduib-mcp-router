@@ -232,6 +232,7 @@ class RouterManager:
     async def get_or_create_client(self, server_id: str) -> McpClient | None:
         """Get or lazily initialize an MCP client for a given server id."""
         client = self._mcp_client_cache.get(server_id)
+        logger.info(f"Client '{client}' fetched from cache for server ID '{server_id}'")
         if client is not None:
             return client
 
@@ -261,6 +262,7 @@ class RouterManager:
         failed: list[str] = []
 
         for server_id, server in self._mcp_server_cache.items():
+            logger.debug(f"Initializing client for server '{server.name}' (ID: {server_id})...")
             client = await self.get_or_create_client(server_id)
             if client is not None:
                 success.append(server.name)
