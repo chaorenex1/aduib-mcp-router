@@ -34,6 +34,14 @@ class RouterManager:
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
         self._clients_initialized = False
+        # Track per-server status for init failures / circuit breaking
+        self._mcp_server_status: dict[str, dict[str, Any]] = {}
+
+        # Optional semaphores for controlling concurrency of inits and feature syncs
+        init_limit = getattr(config, "MCP_MAX_INIT_CONCURRENCY", 5)
+        feature_limit = getattr(config, "MCP_MAX_FEATURE_CONCURRENCY", 5)
+        self._init_semaphore = asyncio.Semaphore(init_limit) if init_limit > 0 else None
+        self._feature_semaphore = asyncio.Semaphore(feature_limit) if feature_limit > 0 else None
 
         self.route_home = self.init_router_home()
         if not self.check_bin_exists('bun'):
@@ -153,26 +161,96 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
-    async def initialize_clients(self):
-        """Initialize all MCP clients and keep them connected."""
-        if self._clients_initialized:
-            logger.info("Clients already initialized, skipping...")
-            return
+    async def _create_client(self, server_id: str) -> McpClient | None:
+        """Lazily create and initialize a client for a single server with timeout and basic circuit breaking."""
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            logger.error(f"No MCP server config found for id={server_id}")
+            return None
 
-        logger.info(f"Initializing {len(self._mcp_server_cache)} MCP clients...")
-        for server_id, server in self._mcp_server_cache.items():
+        status = self._mcp_server_status.setdefault(server_id, {})
+        # Simple circuit-breaker: if recently failed too many times, skip for a while
+        fail_count = status.get("fail_count", 0)
+        circuit_until = status.get("circuit_until")
+        now = asyncio.get_event_loop().time()
+        if circuit_until and now < circuit_until:
+            logger.warning(f"Skipping initialization for server {server.name} (circuit open)")
+            return None
+
+        # Default init timeout from config or fallback
+        init_timeout = getattr(config, "MCP_INIT_TIMEOUT", 30.0)
+
+        async def _do_init() -> McpClient | None:
+            client = McpClient(server)
             try:
-                logger.info(f"Initializing client for server '{server.name}' (ID: {server_id})")
-                client = McpClient(server)
                 await client.__aenter__()
-                self._mcp_client_cache[server_id] = client
+                status["fail_count"] = 0
+                status["last_error"] = None
+                status["last_init_time"] = now
                 logger.info(f"Client '{server.name}' initialized successfully")
-            except Exception as e:
+                return client
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Failed to initialize client for server '{server.name}': {e}")
                 traceback.print_exc()
+                status["fail_count"] = fail_count + 1
+                status["last_error"] = str(e)
+                # Basic backoff: open circuit for some seconds when failures accumulate
+                backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
+                status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
+                return None
+
+        try:
+            if self._init_semaphore is not None:
+                async with self._init_semaphore:
+                    return await asyncio.wait_for(_do_init(), timeout=init_timeout)
+            return await asyncio.wait_for(_do_init(), timeout=init_timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout while initializing client for server '{server.name}'")
+            status["fail_count"] = fail_count + 1
+            status["last_error"] = "init timeout"
+            backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
+            status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
+            return None
+
+    async def get_or_create_client(self, server_id: str) -> McpClient | None:
+        """Get or lazily initialize an MCP client for a given server id."""
+        client = self._mcp_client_cache.get(server_id)
+        if client is not None:
+            return client
+
+        client = await self._create_client(server_id)
+        if client is not None:
+            self._mcp_client_cache[server_id] = client
+        return client
+
+    async def initialize_clients(self):
+        """Initialize MCP clients for all configured servers with concurrency and timeouts.
+
+        This is a best-effort pre-warm; failures for individual servers won't block others.
+        """
+        if self._clients_initialized:
+            logger.info("Clients already initialized, skipping pre-warm...")
+            return
+
+        if not self._mcp_server_cache:
+            logger.info("No MCP servers configured; skipping client initialization.")
+            self._clients_initialized = True
+            return
+
+        logger.info(f"Pre-warming MCP clients for {len(self._mcp_server_cache)} servers...")
+
+        async def _init_single(server_id: str):
+            await self.get_or_create_client(server_id)
+
+        tasks = [
+            _init_single(server_id)
+            for server_id in self._mcp_server_cache.keys()
+        ]
+        # Best-effort: collect all results but don't raise on individual failures
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         self._clients_initialized = True
-        logger.info(f"Successfully initialized {len(self._mcp_client_cache)} MCP clients")
+        logger.info(f"Pre-warm complete; active clients: {len(self._mcp_client_cache)}")
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
@@ -193,17 +271,33 @@ class RouterManager:
         return self._mcp_client_cache.get(server_id)
 
     async def _init_features(self, feature_type: str):
-        """Initialize MCP clients and cache their features."""
-        # callbacks = [self.async_updator]
-        callbacks = []
-        tasks=[]
-        for i, mcp_server in enumerate(self._mcp_server_cache.values()):
-            tasks.append(self.cache_mcp_features(feature_type,mcp_server.id))
-            tasks.append(self.refresh(feature_type,mcp_server.id))
+        """Initialize/cached features for all servers with bounded concurrency.
+
+        This pulls feature metadata from all available servers and updates local caches.
+        """
+        tasks = []
+
+        async def _sync_server(server_id: str):
+            # Ensure client exists (lazy) but ignore failures here
+            await self.get_or_create_client(server_id)
+            if self._feature_semaphore is not None:
+                async with self._feature_semaphore:
+                    await self.cache_mcp_features(feature_type, server_id)
+                    await self.refresh(feature_type, server_id)
+            else:
+                await self.cache_mcp_features(feature_type, server_id)
+                await self.refresh(feature_type, server_id)
+
+        for server_id in self._mcp_server_cache.keys():
+            tasks.append(_sync_server(server_id))
+
+        if not tasks:
+            return
+
         try:
-            await asyncio.gather(*tasks,return_exceptions=True)
-        except Exception as e:
-            logger.error(f"Client failed: {e}")
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Feature initialization failed for type '{feature_type}': {e}")
 
     async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
         """Initialize a single MCP client and cache its features."""
@@ -219,15 +313,22 @@ class RouterManager:
         except Exception as e:
             logger.error(f"Client {mcp_server.name} failed: {e}")
 
-    async def _send_message_wait_response(self, server_id: str, message: RouteMessage,timeout: float = 600.0):
-        """Send a message to a specific MCP client."""
-        # Ensure clients are initialized
-        if not self._clients_initialized:
-            await self.initialize_clients()
+    async def _send_message_wait_response(self, server_id: str, message: RouteMessage, timeout: float = 600.0):
+        """Send a message to a specific MCP client with per-call timeout and lazy init."""
+        # Determine effective timeout based on function_name if caller didn't override
+        if timeout == 600.0 and message.function_name:
+            # Default timeouts configurable per category
+            if message.function_name.startswith("list_"):
+                timeout = float(getattr(config, "MCP_LIST_TIMEOUT", 30.0))
+            elif message.function_name == "call_tool":
+                timeout = float(getattr(config, "MCP_CALL_TOOL_TIMEOUT", 120.0))
+            else:
+                timeout = float(getattr(config, "MCP_DEFAULT_TIMEOUT", 60.0))
 
-        client = self._mcp_client_cache.get(server_id)
+        # Lazy init per server instead of initializing all at once
+        client = await self.get_or_create_client(server_id)
         if not client:
-            logger.error(f"No client found for server ID {server_id}")
+            logger.error(f"No available client for server ID {server_id}")
             return None
 
         try:
@@ -235,9 +336,9 @@ class RouterManager:
             response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
             return response
         except asyncio.TimeoutError:
-            logger.error(f"Timeout waiting for response from client {server_id}")
+            logger.error(f"Timeout waiting for response from client {server_id} for {message.function_name}")
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             logger.error(f"Error communicating with client {server_id}: {e}")
             return None
@@ -324,28 +425,25 @@ class RouterManager:
 
 
     def async_updator(self):
-        """Asynchronous updater to refresh all cached features and vector caches."""
+        """Asynchronous updater to periodically refresh cached features and vector caches."""
         async def _async_updater():
-            _features=['tool','resource','prompt']
+            _features = ['tool', 'resource', 'prompt']
             while True:
                 try:
                     await asyncio.sleep(config.MCP_REFRESH_INTERVAL)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.warning("exception while sleeping: ", exc_info=e)
+                    continue
                 try:
                     for feature in _features:
-                        for mcp_server in self._mcp_server_cache.values():
-                            await self.cache_mcp_features(feature,mcp_server.id)
-                            await self.refresh(feature,mcp_server.id)
-                except Exception as e:
+                        await self._init_features(feature)
+                except Exception as e:  # noqa: BLE001
                     logger.warning("exception while updating mcp servers: ", exc_info=e)
         asyncio.create_task(_async_updater())
 
-
-
     async def list_tools(self):
-        """List all cached tools from all MCP clients."""
-        if len(self._mcp_server_tools_cache.values())<=0:
+        """List all cached tools from all MCP clients, initializing on-demand."""
+        if len(self._mcp_server_tools_cache.values()) <= 0:
             await self._init_features("tool")
         tools = []
         for tool_list in self._mcp_server_tools_cache.values():
@@ -362,8 +460,8 @@ class RouterManager:
         return None
 
     async def list_resources(self):
-        """List all cached resources from all MCP clients."""
-        if len(self._mcp_server_resources_cache.values())<=0:
+        """List all cached resources from all MCP clients, initializing on-demand."""
+        if len(self._mcp_server_resources_cache.values()) <= 0:
             await self._init_features("resource")
         resources = []
         for resource_list in self._mcp_server_resources_cache.values():
@@ -371,8 +469,8 @@ class RouterManager:
         return resources
 
     async def list_prompts(self):
-        """List all cached prompts from all MCP clients."""
-        if len(self._mcp_server_prompts_cache.values())<=0:
+        """List all cached prompts from all MCP clients, initializing on-demand."""
+        if len(self._mcp_server_prompts_cache.values()) <= 0:
             await self._init_features("prompt")
         prompts = []
         for prompt_list in self._mcp_server_prompts_cache.values():
@@ -380,7 +478,7 @@ class RouterManager:
         return prompts
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
-        """Call a tool by name with arguments."""
+        """Call a tool by name with arguments across all matching servers with per-call timeouts."""
         logger.debug(f"Calling tool {name} with arguments {arguments}")
         query_result = self.ChromaDb.query(self.tools_collection, name, 10)
         metadatas = query_result.get("metadatas")
@@ -394,12 +492,31 @@ class RouterManager:
             logger.debug(f"No exact match found for tool name '{name}' in metadata.")
             raise ValueError(f"Tool {name} not found.")
 
-        result_list = []
-        for metadata in actual_list:
-            server_id = metadata.get("server_id")
-            original_tool_name = metadata.get("original_name")
-            response = await self._send_message_wait_response(server_id, RouteMessage(function_name='call_tool', args=(original_tool_name, arguments), kwargs={}))
-            if response and response.result:
-                result_list.append(response.result)
+        # Use a configurable timeout for tool calls
+        timeout = float(getattr(config, "MCP_CALL_TOOL_TIMEOUT", 120.0))
+
+        async def _call_single(md: dict[str, Any]):
+            server_id = md.get("server_id")
+            original_tool_name = md.get("original_name")
+            if not server_id or not original_tool_name:
+                return None
+            try:
+                response = await self._send_message_wait_response(
+                    server_id,
+                    RouteMessage(function_name='call_tool', args=(original_tool_name, arguments), kwargs={}),
+                    timeout=timeout,
+                )
+                if response and getattr(response, "result", None) is not None:
+                    return response.result
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Error calling tool {original_tool_name} on server {server_id}: {e}")
+            return None
+
+        tasks = [_call_single(md) for md in actual_list]
+        if not tasks:
+            return []
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        result_list = [r for r in results if not isinstance(r, Exception) and r is not None]
         return result_list
 
