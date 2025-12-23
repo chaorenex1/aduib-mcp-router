@@ -257,11 +257,21 @@ class RouterManager:
 
         logger.info(f"Sequentially initializing MCP clients for {len(self._mcp_server_cache)} servers...")
 
-        for server_id in self._mcp_server_cache.keys():
-            await self.get_or_create_client(server_id)
+        success: list[str] = []
+        failed: list[str] = []
+
+        for server_id, server in self._mcp_server_cache.items():
+            client = await self.get_or_create_client(server_id)
+            if client is not None:
+                success.append(server.name)
+            else:
+                failed.append(server.name)
 
         self._clients_initialized = True
         logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
+        logger.info(f"MCP initialization success list: {success}")
+        if failed:
+            logger.warning(f"MCP initialization failed list: {failed}")
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
@@ -287,17 +297,27 @@ class RouterManager:
         This pulls feature metadata from all available servers and updates local caches.
         """
         tasks = []
+        success: list[str] = []
+        failed: list[str] = []
 
         async def _sync_server(server_id: str):
-            # Ensure client exists (lazy) but ignore failures here
-            await self.get_or_create_client(server_id)
-            if self._feature_semaphore is not None:
-                async with self._feature_semaphore:
+            server = self._mcp_server_cache.get(server_id)
+            if not server:
+                return
+            try:
+                # Ensure client exists (lazy) but ignore failures here
+                await self.get_or_create_client(server_id)
+                if self._feature_semaphore is not None:
+                    async with self._feature_semaphore:
+                        await self.cache_mcp_features(feature_type, server_id)
+                        await self.refresh(feature_type, server_id)
+                else:
                     await self.cache_mcp_features(feature_type, server_id)
                     await self.refresh(feature_type, server_id)
-            else:
-                await self.cache_mcp_features(feature_type, server_id)
-                await self.refresh(feature_type, server_id)
+                success.append(server.name)
+            except Exception as e:  # noqa: BLE001
+                failed.append(server.name)
+                logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}': {e}")
 
         for server_id in self._mcp_server_cache.keys():
             tasks.append(_sync_server(server_id))
@@ -305,10 +325,11 @@ class RouterManager:
         if not tasks:
             return
 
-        try:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Feature initialization failed for type '{feature_type}': {e}")
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        logger.info(f"Feature '{feature_type}' init success MCPs: {success}")
+        if failed:
+            logger.warning(f"Feature '{feature_type}' init failed MCPs: {failed}")
 
     async def _int_client_features(self, mcp_server, index: int,callbacks:list[Callable[..., Awaitable[Any]]]):
         """Initialize a single MCP client and cache its features."""
@@ -425,11 +446,11 @@ class RouterManager:
                     if not ids:
                         return
                     self._mcp_vector_cache[name] = docs
-                    logger.debug(f"Updating collection '{collection}' with {len(ids)} items from server '{server_id}'.")
+                    # logger.debug(f"Updating collection '{collection}' with {len(ids)} items from server '{server_id}'.")
                     self.ChromaDb.update_data(documents=docs, ids=ids, metadata=metas, collection_id=collection)
                     deleted_id = self.ChromaDb.get_deleted_ids(collection_id=collection,_cache=cache)
                     if len(deleted_id) > 0:
-                        logger.debug(f"Deleting {len(deleted_id)} items from collection '{collection}' not present in server '{server_id}'.")
+                        # logger.debug(f"Deleting {len(deleted_id)} items from collection '{collection}' not present in server '{server_id}'.")
                         self.ChromaDb.delete(ids=deleted_id, collection_id=collection)
         except Exception as e:
             logger.error(f"Error during refresh: {e}")

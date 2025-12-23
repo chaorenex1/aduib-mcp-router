@@ -13,6 +13,8 @@ from mcp.client.streamable_http import streamablehttp_client
 from aduib_mcp_router.configs import config
 from aduib_mcp_router.mcp_router.types import McpServerInfo, ShellEnv, RouteMessage, RouteMessageResult
 
+import sys  # needed for error handling in __aenter__
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,9 @@ class McpClient:
                 await self.cleanup()
             finally:
                 if self._task_group is not None:
-                    await self._task_group.__aexit__(*sys.exc_info())
+                    # Use the current exception info to exit the task group cleanly
+                    exc_type, exc_val, exc_tb = sys.exc_info()
+                    await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
                     self._task_group = None
             raise
 
@@ -232,7 +236,7 @@ class McpClient:
                             msg = await self.serverToClientQueue.get()
                             self.serverToClientQueue.task_done()
                             wait_result = False
-                            logger.debug(f"Received message from server: {msg}, wait_result={wait_result}")
+                            # logger.debug(f"Received message from server: {msg}, wait_result={wait_result}")
                             return msg
                     except Exception as e:
                         logger.error(f"Error receiving message: {e}")
