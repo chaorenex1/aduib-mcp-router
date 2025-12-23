@@ -132,32 +132,37 @@ class RouterManager:
         shell_env = ShellEnv()
         args_list: list[str] = []
 
-        # Default: no wrapper shell, run command directly when possible
+        # Pass-through environment from config
         shell_env.env = args.env
 
-        # uvx / uv
-        if args.command and (args.command == 'uvx' or args.command == 'uv'):
-            # Use the uvx binary installed under ROUTER_HOME/bin
-            shell_env.command_run = cls.get_binary('uvx')
+        # If server is not stdio-based, we don't construct a shell command here.
+        # HTTP/SSE/etc. are handled by their respective clients and don't need a
+        # local process command.
+        if args.type and args.type != "stdio":
+            shell_env.command_run = None
+            shell_env.args = []
+            return shell_env
+
+        # stdio servers below
+        # uvx / uv: prefer system uvx if available, otherwise fall back to bundled one
+        if args.command and (args.command == "uvx" or args.command == "uv"):
+            shell_env.command_run = args.command
             for arg in args.args:
                 args_list.append(arg)
         # npx / bunx style commands
-        elif args.command and args.command == 'npx':
+        elif args.command and args.command == "npx":
             # Use bun as the underlying runner when available
-            shell_env.command_run = cls.get_binary('bun')
+            shell_env.command_run = cls.get_binary("bun")
             # Map "npx" semantics onto "bun x" / "bunx": insert the subcommand marker
             for arg in args.args:
-                if arg in ('-y', '--yes'):
+                if arg in ("-y", "--yes"):
                     # bun x does not need -y/--yes, translate to x
                     continue
                 args_list.append(arg)
             # Prepend the "x" subcommand for bun
-            args_list.insert(0, 'x')
+            args_list.insert(0, "x")
         else:
             # Fallback: run the given command directly (python, node, etc.)
-            # On Windows we still avoid wrapping in cmd.exe here to reduce
-            # the chance of leaving zombie shells around; the underlying
-            # subprocess will execute the binary specified in args.command.
             shell_env.command_run = args.command
             for arg in args.args:
                 args_list.append(arg)
