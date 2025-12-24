@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "aduib-mcp-router"
-version = "1.1.11"
+version = "1.0.13"
 source = { editable = "." }
 dependencies = [
     { name = "bcrypt" },
@@ -31,7 +31,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.3.0" },
     { name = "chromadb", specifier = ">=1.0.5" },
     { name = "nacos-mcp-wrapper-python" },
-    { name = "nacos-sdk-python", specifier = ">=2.0.1" },
+    { name = "nacos-sdk-python", specifier = "<=2.0.9" },
     { name = "pydantic", specifier = ">=2.11.3" },
     { name = "pydantic-settings", specifier = ">=2.9.1" },
     { name = "pytz" },
