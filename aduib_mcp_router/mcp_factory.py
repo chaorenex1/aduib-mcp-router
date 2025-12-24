@@ -31,9 +31,9 @@ class MCPFactory:
 
         # Initialize MCP clients on startup
         if self.router_manager:
-            log.info("Initializing MCP clients...")
-            await self.router_manager.initialize_clients()
-            log.info("MCP clients initialized successfully")
+            log.info("Initializing MCP clients and feature caches...")
+            await self.router_manager.initialize_all_features()
+            log.info("MCP clients and features initialized successfully")
 
         try:
             yield

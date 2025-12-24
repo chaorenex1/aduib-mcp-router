@@ -34,8 +34,6 @@ class RouterManager:
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
         self._clients_initialized = False
-        self._client_init_task: asyncio.Task | None = None
-        self._feature_init_tasks: dict[str, asyncio.Task] = {}
         self._feature_initialized: dict[str, bool] = {"tool": False, "resource": False, "prompt": False}
         # Track per-server status for init failures / circuit breaking
         self._mcp_server_status: dict[str, dict[str, Any]] = {}
@@ -65,10 +63,6 @@ class RouterManager:
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
         self.prompts_collection = self.ChromaDb.create_collection(collection_name="prompts")
         self.resources_collection = self.ChromaDb.create_collection(collection_name="resources")
-        self._ensure_client_init_task()
-        self._ensure_feature_task("tool")
-        self._ensure_feature_task("resource")
-        self._ensure_feature_task("prompt")
         # self.async_updator()
 
     @classmethod
@@ -185,75 +179,9 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
-    def _ensure_client_init_task(self) -> asyncio.Task | None:
-        """Ensure a background MCP client initialization task exists."""
-        if self._clients_initialized:
-            return None
-        task = self._client_init_task
-        if task is not None and not task.done():
-            return task
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug("No running event loop; skipping automatic MCP client initialization.")
-            return None
-        task = loop.create_task(self._client_init_worker())
-        task.add_done_callback(self._handle_client_init_done)
-        self._client_init_task = task
-        return task
-
-    def _handle_client_init_done(self, task: asyncio.Task[Any]):
-        """Log errors from background initialization tasks."""
-        if task.cancelled():
-            logger.debug("Background MCP client initialization task was cancelled.")
-            return
-        exc = task.exception()
-        if exc:
-            logger.error("Background MCP client initialization failed: %s", exc)
-
-    async def _client_init_worker(self):
-        """Wrapper that keeps _client_init_task in sync with the running task."""
-        try:
-            await self._run_client_initialization()
-        finally:
-            self._client_init_task = None
-
-    def _ensure_feature_task(self, feature_type: str) -> asyncio.Task | None:
-        """Ensure background feature sync is scheduled for the given type."""
-        if self._feature_initialized.get(feature_type):
-            return None
-        task = self._feature_init_tasks.get(feature_type)
-        if task is not None and not task.done():
-            return task
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug("No running event loop; skipping automatic feature sync for %s.", feature_type)
-            return None
-        task = loop.create_task(self._init_features(feature_type))
-        self._feature_init_tasks[feature_type] = task
-        task.add_done_callback(lambda t, ft=feature_type: self._handle_feature_task_done(ft, t))
-        return task
-
-    def _handle_feature_task_done(self, feature_type: str, task: asyncio.Task[Any]):
-        """Cleanup bookkeeping when a feature sync task completes."""
-        self._feature_init_tasks.pop(feature_type, None)
-        if task.cancelled():
-            logger.debug("Feature sync task for %s was cancelled.", feature_type)
-            return
-        exc = task.exception()
-        if exc:
-            logger.error("Background feature sync for %s failed: %s", feature_type, exc)
-        else:
-            self._feature_initialized[feature_type] = True
-
     async def ensure_feature_cache(self, feature_type: str):
         """Ensure the given feature cache has been hydrated at least once."""
         if self._feature_initialized.get(feature_type):
-            return
-        task = self._ensure_feature_task(feature_type)
-        if task is not None:
-            await task
             return
         await self._init_features(feature_type)
 
@@ -355,34 +283,18 @@ class RouterManager:
             logger.info("Clients already initialized, skipping pre-warm...")
             return
 
-        task = self._ensure_client_init_task()
-        if task is None:
-            logger.debug("No initialization task scheduled; running inline initialization.")
-            await self._run_client_initialization()
-            return
+        await self._run_client_initialization()
 
-        await task
+    async def initialize_all_features(self):
+        """Initialize clients and hydrate all feature caches sequentially."""
+        await self.initialize_clients()
+        for feature in ("tool", "resource", "prompt"):
+            if not self._feature_initialized.get(feature):
+                await self._init_features(feature)
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
         logger.info("Cleaning up MCP clients...")
-        task = self._client_init_task
-        if task and not task.done():
-            logger.debug("Cancelling in-progress client initialization task...")
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.debug("Client initialization task cancelled.")
-        for feature_type, feature_task in list(self._feature_init_tasks.items()):
-            if feature_task.done():
-                continue
-            feature_task.cancel()
-            try:
-                await feature_task
-            except asyncio.CancelledError:
-                logger.debug("Feature init task for %s cancelled.", feature_type)
-        self._feature_init_tasks.clear()
         for server_id, client in list(self._mcp_client_cache.items()):
             try:
                 logger.info(f"Cleaning up client for server ID: {server_id}")
