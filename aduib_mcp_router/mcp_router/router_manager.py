@@ -268,8 +268,8 @@ class RouterManager:
     async def get_or_create_client(self, server_id: str) -> McpClient | None:
         """Get or lazily initialize an MCP client for a given server id."""
         client = self._mcp_client_cache.get(server_id)
-        logger.info(f"Client '{client}' fetched from cache for server ID '{server_id}'")
         if client is not None:
+            logger.info(f"Client '{client.server.name}' fetched from cache for server ID '{server_id}'")
             return client
 
         client = await self._create_client(server_id)
@@ -388,7 +388,7 @@ class RouterManager:
         # Lazy init per server instead of initializing all at once
         client = await self.get_or_create_client(server_id)
         if not client:
-            logger.error(f"No available client for server ID {server_id}")
+            logger.error(f"No available client for server ID {client.server.name}")
             return None
 
         try:
@@ -396,11 +396,11 @@ class RouterManager:
             response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
             return response
         except asyncio.TimeoutError:
-            logger.error(f"Timeout waiting for response from client {server_id} for {message.function_name}")
+            logger.error(f"Timeout waiting for response from client {client.server.name} for {message.function_name}")
             return None
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
-            logger.error(f"Error communicating with client {server_id}: {e}")
+            logger.error(f"Error communicating with client {client.server.name}: {e}")
             return None
 
     async def cache_mcp_features(self,feature_type: str, server_id: str = None):
