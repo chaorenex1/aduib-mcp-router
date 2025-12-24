@@ -599,11 +599,17 @@ class RouterManager:
         asyncio.create_task(_async_updater())
 
     async def list_tools(self):
-        """List all cached tools from all MCP clients, initializing on-demand."""
+        """List tool names and descriptions from all MCP clients."""
         await self.ensure_feature_cache("tool")
-        tools = []
+        tools: list[dict[str, str | None]] = []
         for tool_list in self._mcp_server_tools_cache.values():
-            tools += tool_list
+            for tool in tool_list:
+                tools.append(
+                    {
+                        "tool_name": getattr(tool, "tool_name", None),
+                        "description": getattr(tool, "description", None),
+                    }
+                )
         return tools
 
     def get_tool(self, name: str,server_id: str = None):
