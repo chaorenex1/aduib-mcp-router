@@ -1,5 +1,3 @@
-import json
-
 from aduib_mcp_router.app import app
 mcp= app.mcp
 router_manager= app.router_manager
@@ -115,12 +113,15 @@ Assistant: The population of Shanghai is 26 million, while Guangzhou has a popul
 
 
 ## Tool Use Available Tools
-Above example were using notional tools that might not exist for you. You only have access to these tools:
-<tools>
+Above examples used notional tools that might not exist for you. The actual registry is hidden; you must use the discovery helpers below to find the right capability and its usage instructions:
 
-{''.join([f'  <tool>\n    <name>{tool.name}</name>\n    <description>{tool.description}</description>\n  <arguments>{json.dumps(tool.inputSchema)}</arguments>\n </tool>\n' for tool in router_manager.list_tools()])}
+- `search_tool(query: str, limit: int = 5)`: search the vector database of remote tools and receive the closest matches (names, descriptions, schemas, source server).
+- `search_tool_prompts(query: str, limit: int = 5)`: search stored prompt templates/instructions that describe how to use the tools you discovered.
+- `call_tool(tool_name: str, arguments: dict)`: invoke a remote tool once you know its exact name and required arguments.
+- `search_resources(query: str, limit: int = 5)`: retrieve relevant remote resources (URI, description, mime type, server) from the vector database.
+- `read_remote_resource(server_id: str, uri: str)`: fetch the actual resource content after you've identified a resource to consume.
 
-</tools>
+Workflow: run `search_tool` to shortlist candidate tools, optionally call `search_tool_prompts` to understand usage patterns, then execute the proper capability with `call_tool`. For resources, run `search_resources` to find the relevant URI and finally call `read_remote_resource` with the matching server ID.
 
 ## Tool Use Rules
 Here are the rules you should always follow to solve your task:

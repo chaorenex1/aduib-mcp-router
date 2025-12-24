@@ -34,6 +34,9 @@ class RouterManager:
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
         self._clients_initialized = False
+        self._client_init_task: asyncio.Task | None = None
+        self._feature_init_tasks: dict[str, asyncio.Task] = {}
+        self._feature_initialized: dict[str, bool] = {"tool": False, "resource": False, "prompt": False}
         # Track per-server status for init failures / circuit breaking
         self._mcp_server_status: dict[str, dict[str, Any]] = {}
 
@@ -62,6 +65,10 @@ class RouterManager:
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
         self.prompts_collection = self.ChromaDb.create_collection(collection_name="prompts")
         self.resources_collection = self.ChromaDb.create_collection(collection_name="resources")
+        self._ensure_client_init_task()
+        self._ensure_feature_task("tool")
+        self._ensure_feature_task("resource")
+        self._ensure_feature_task("prompt")
         # self.async_updator()
 
     @classmethod
@@ -178,6 +185,101 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
+    def _ensure_client_init_task(self) -> asyncio.Task | None:
+        """Ensure a background MCP client initialization task exists."""
+        if self._clients_initialized:
+            return None
+        task = self._client_init_task
+        if task is not None and not task.done():
+            return task
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No running event loop; skipping automatic MCP client initialization.")
+            return None
+        task = loop.create_task(self._client_init_worker())
+        task.add_done_callback(self._handle_client_init_done)
+        self._client_init_task = task
+        return task
+
+    def _handle_client_init_done(self, task: asyncio.Task[Any]):
+        """Log errors from background initialization tasks."""
+        exc = task.exception()
+        if exc:
+            logger.error("Background MCP client initialization failed: %s", exc)
+
+    async def _client_init_worker(self):
+        """Wrapper that keeps _client_init_task in sync with the running task."""
+        try:
+            await self._run_client_initialization()
+        finally:
+            self._client_init_task = None
+
+    def _ensure_feature_task(self, feature_type: str) -> asyncio.Task | None:
+        """Ensure background feature sync is scheduled for the given type."""
+        if self._feature_initialized.get(feature_type):
+            return None
+        task = self._feature_init_tasks.get(feature_type)
+        if task is not None and not task.done():
+            return task
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No running event loop; skipping automatic feature sync for %s.", feature_type)
+            return None
+        task = loop.create_task(self._init_features(feature_type))
+        self._feature_init_tasks[feature_type] = task
+        task.add_done_callback(lambda t, ft=feature_type: self._handle_feature_task_done(ft, t))
+        return task
+
+    def _handle_feature_task_done(self, feature_type: str, task: asyncio.Task[Any]):
+        """Cleanup bookkeeping when a feature sync task completes."""
+        self._feature_init_tasks.pop(feature_type, None)
+        exc = task.exception()
+        if exc:
+            logger.error("Background feature sync for %s failed: %s", feature_type, exc)
+        else:
+            self._feature_initialized[feature_type] = True
+
+    async def ensure_feature_cache(self, feature_type: str):
+        """Ensure the given feature cache has been hydrated at least once."""
+        if self._feature_initialized.get(feature_type):
+            return
+        task = self._ensure_feature_task(feature_type)
+        if task is not None:
+            await task
+            return
+        await self._init_features(feature_type)
+
+    async def _run_client_initialization(self):
+        """Sequentially initialize MCP clients for all configured servers."""
+        if not self._mcp_server_cache:
+            logger.info("No MCP servers configured; skipping client initialization.")
+            self._clients_initialized = True
+            return
+
+        logger.info(f"Sequentially initializing MCP clients for {len(self._mcp_server_cache)} servers...")
+        success: list[str] = []
+        failed: list[str] = []
+
+        for server_id, server in self._mcp_server_cache.items():
+            logger.debug(f"Initializing client for server '{server.name}' (ID: {server_id})...")
+            try:
+                client = await self.get_or_create_client(server_id)
+                if client is not None:
+                    success.append(server.name)
+                else:
+                    failed.append(server.name)
+            except Exception as e:  # noqa: BLE001
+                failed.append(server.name)
+                logger.error(f"Error initializing client for server '{server.name}': {e}")
+
+        self._clients_initialized = True
+        logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
+        logger.info(f"MCP initialization success list: {success}")
+        if failed:
+            logger.warning(f"MCP initialization failed list: {failed}")
+
     async def _create_client(self, server_id: str) -> McpClient | None:
         """Lazily create and initialize a client for a single server.
 
@@ -242,46 +344,39 @@ class RouterManager:
         return client
 
     async def initialize_clients(self):
-        """Initialize MCP clients for all configured servers sequentially.
-
-        This strictly uses a one-by-one initialization strategy to avoid
-        spawning many stdio MCP processes at the same time.
-        """
+        """Ensure MCP clients are initialized, awaiting any in-progress warmups."""
         if self._clients_initialized:
             logger.info("Clients already initialized, skipping pre-warm...")
             return
 
-        if not self._mcp_server_cache:
-            logger.info("No MCP servers configured; skipping client initialization.")
-            self._clients_initialized = True
+        task = self._ensure_client_init_task()
+        if task is None:
+            logger.debug("No initialization task scheduled; running inline initialization.")
+            await self._run_client_initialization()
             return
 
-        logger.info(f"Sequentially initializing MCP clients for {len(self._mcp_server_cache)} servers...")
-
-        success: list[str] = []
-        failed: list[str] = []
-
-        for server_id, server in self._mcp_server_cache.items():
-            logger.debug(f"Initializing client for server '{server.name}' (ID: {server_id})...")
-            try:
-                client = await self.get_or_create_client(server_id)
-                if client is not None:
-                    success.append(server.name)
-                else:
-                    failed.append(server.name)
-            except Exception as e:  # noqa: BLE001
-                failed.append(server.name)
-                logger.error(f"Error initializing client for server '{server.name}': {e}")
-
-        self._clients_initialized = True
-        logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
-        logger.info(f"MCP initialization success list: {success}")
-        if failed:
-            logger.warning(f"MCP initialization failed list: {failed}")
+        await task
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
         logger.info("Cleaning up MCP clients...")
+        task = self._client_init_task
+        if task and not task.done():
+            logger.debug("Cancelling in-progress client initialization task...")
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.debug("Client initialization task cancelled.")
+        for feature_type, feature_task in list(self._feature_init_tasks.items()):
+            if feature_task.done():
+                continue
+            feature_task.cancel()
+            try:
+                await feature_task
+            except asyncio.CancelledError:
+                logger.debug("Feature init task for %s cancelled.", feature_type)
+        self._feature_init_tasks.clear()
         for server_id, client in list(self._mcp_client_cache.items()):
             try:
                 logger.info(f"Cleaning up client for server ID: {server_id}")
@@ -291,6 +386,8 @@ class RouterManager:
 
         self._mcp_client_cache.clear()
         self._clients_initialized = False
+        for feature in self._feature_initialized.keys():
+            self._feature_initialized[feature] = False
         logger.info("All MCP clients cleaned up")
 
     def get_client(self, server_id: str) -> McpClient | None:
@@ -302,6 +399,7 @@ class RouterManager:
 
         This pulls feature metadata from all available servers and updates local caches.
         """
+        await self.initialize_clients()
         tasks = []
         success: list[str] = []
         failed: list[str] = []
@@ -334,6 +432,7 @@ class RouterManager:
         await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
+        self._feature_initialized[feature_type] = True
         if failed:
             logger.warning(f"Feature '{feature_type}' init failed MCPs: {failed}")
 
@@ -353,6 +452,7 @@ class RouterManager:
 
     async def _send_message_wait_response(self, server_id: str, message: RouteMessage, timeout: float = 600.0):
         """Send a message to a specific MCP client with per-call timeout and lazy init."""
+        await self.initialize_clients()
         # Determine effective timeout based on function_name if caller didn't override
         if timeout == 600.0 and message.function_name:
             # Default timeouts configurable per category
@@ -447,7 +547,15 @@ class RouterManager:
                     des=item.description if item.description else item.name
                     ids.append(name)
                     docs.append(des)
-                    metad = {"server_id": server_id, "original_name": item.name}
+                    metad = {"server_id": server_id, "original_name": getattr(item, "name", None)}
+                    if feature_name == 'resource':
+                        metad["uri"] = getattr(item, "uri", None)
+                        metad["mime_type"] = getattr(item, "mimeType", None)
+                        metad["description"] = getattr(item, "description", None)
+                    elif feature_name == 'tool':
+                        metad["description"] = getattr(item, "description", None)
+                    elif feature_name == 'prompt':
+                        metad["description"] = getattr(item, "description", None)
                     metas.append(metad)
                     if not ids:
                         return
@@ -460,6 +568,118 @@ class RouterManager:
                         self.ChromaDb.delete(ids=deleted_id, collection_id=collection)
         except Exception as e:
             logger.error(f"Error during refresh: {e}")
+
+    def _extract_vector_results(self, query_result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Normalize chroma query results into a single list of dicts."""
+        results: list[dict[str, Any]] = []
+        metadata_rows = query_result.get("metadatas") or []
+        document_rows = query_result.get("documents") or []
+        distance_rows = query_result.get("distances") or []
+        id_rows = query_result.get("ids") or []
+        if not metadata_rows:
+            return results
+        metadata_list = metadata_rows[0]
+        document_list = document_rows[0] if document_rows else [None] * len(metadata_list)
+        distance_list = distance_rows[0] if distance_rows else [None] * len(metadata_list)
+        id_list = id_rows[0] if id_rows else [None] * len(metadata_list)
+        for metadata, document, distance, item_id in zip(metadata_list, document_list, distance_list, id_list):
+            results.append(
+                {
+                    "metadata": metadata or {},
+                    "document": document,
+                    "distance": distance,
+                    "id": item_id,
+                }
+            )
+        return results
+
+    def _safe_model_dump(self, value: Any) -> Any:
+        """Convert pydantic models to plain dicts when possible."""
+        if value is None:
+            return None
+        dump = getattr(value, "model_dump", None)
+        if callable(dump):
+            return dump()
+        return value
+
+    async def search_tools(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search tool metadata using the vector index."""
+        await self.ensure_feature_cache("tool")
+        query_result = self.ChromaDb.query(self.tools_collection, query, limit)
+        entries = self._extract_vector_results(query_result)
+        matches: list[dict[str, Any]] = []
+        for entry in entries:
+            metadata = entry["metadata"] or {}
+            server_id = metadata.get("server_id")
+            original_name = metadata.get("original_name")
+            if not server_id or not original_name:
+                continue
+            tool = self.get_tool(original_name, server_id)
+            if not tool:
+                continue
+            server = self.get_mcp_server(server_id)
+            match = {
+                "tool_name": tool.name,
+                "description": tool.description,
+                "server_id": server_id,
+                "server_name": server.name if server else None,
+                "input_schema": tool.inputSchema,
+                "annotations": self._safe_model_dump(getattr(tool, "annotations", None)),
+                "score": float(entry["distance"]) if entry["distance"] is not None else None,
+            }
+            matches.append(match)
+        return matches
+
+    async def search_prompts(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search prompt metadata using the vector index."""
+        await self.ensure_feature_cache("prompt")
+        query_result = self.ChromaDb.query(self.prompts_collection, query, limit)
+        entries = self._extract_vector_results(query_result)
+        matches: list[dict[str, Any]] = []
+        for entry in entries:
+            metadata = entry["metadata"] or {}
+            server_id = metadata.get("server_id")
+            original_name = metadata.get("original_name")
+            if not server_id or not original_name:
+                continue
+            prompt = self.get_prompt(original_name, server_id)
+            if not prompt:
+                continue
+            server = self.get_mcp_server(server_id)
+            match = {
+                "prompt_name": prompt.name,
+                "description": prompt.description,
+                "arguments": [arg.model_dump() for arg in (prompt.arguments or [])],
+                "server_id": server_id,
+                "server_name": server.name if server else None,
+                "score": float(entry["distance"]) if entry["distance"] is not None else None,
+            }
+            matches.append(match)
+        return matches
+
+    async def search_resources(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search resource metadata using the vector index."""
+        await self.ensure_feature_cache("resource")
+        query_result = self.ChromaDb.query(self.resources_collection, query, limit)
+        entries = self._extract_vector_results(query_result)
+        matches: list[dict[str, Any]] = []
+        for entry in entries:
+            metadata = entry["metadata"] or {}
+            server_id = metadata.get("server_id")
+            if not server_id:
+                continue
+            server = self.get_mcp_server(server_id)
+            match = {
+                "resource_name": metadata.get("original_name"),
+                "description": metadata.get("description"),
+                "uri": metadata.get("uri"),
+                "mime_type": metadata.get("mime_type"),
+                "server_id": server_id,
+                "server_name": server.name if server else None,
+                "score": float(entry["distance"]) if entry["distance"] is not None else None,
+            }
+            matches.append(match)
+        return matches
 
 
     def async_updator(self):
@@ -481,8 +701,7 @@ class RouterManager:
 
     async def list_tools(self):
         """List all cached tools from all MCP clients, initializing on-demand."""
-        if len(self._mcp_server_tools_cache.values()) <= 0:
-            await self._init_features("tool")
+        await self.ensure_feature_cache("tool")
         tools = []
         for tool_list in self._mcp_server_tools_cache.values():
             tools += tool_list
@@ -497,10 +716,18 @@ class RouterManager:
                     return tool
         return None
 
+    def get_prompt(self, name: str, server_id: str = None):
+        """Get a cached prompt by name."""
+        prompts = self._mcp_server_prompts_cache.get(server_id)
+        if prompts:
+            for prompt in prompts:
+                if prompt.name == name:
+                    return prompt
+        return None
+
     async def list_resources(self):
         """List all cached resources from all MCP clients, initializing on-demand."""
-        if len(self._mcp_server_resources_cache.values()) <= 0:
-            await self._init_features("resource")
+        await self.ensure_feature_cache("resource")
         resources = []
         for resource_list in self._mcp_server_resources_cache.values():
             resources += resource_list
@@ -508,8 +735,7 @@ class RouterManager:
 
     async def list_prompts(self):
         """List all cached prompts from all MCP clients, initializing on-demand."""
-        if len(self._mcp_server_prompts_cache.values()) <= 0:
-            await self._init_features("prompt")
+        await self.ensure_feature_cache("prompt")
         prompts = []
         for prompt_list in self._mcp_server_prompts_cache.values():
             prompts += prompt_list
@@ -518,6 +744,7 @@ class RouterManager:
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         """Call a tool by name with arguments across all matching servers with per-call timeouts."""
         logger.debug(f"Calling tool {name} with arguments {arguments}")
+        await self.ensure_feature_cache("tool")
         query_result = self.ChromaDb.query(self.tools_collection, name, 10)
         metadatas = query_result.get("metadatas")
         metadata_list = metadatas[0] if metadatas else []
@@ -557,4 +784,15 @@ class RouterManager:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         result_list = [r for r in results if not isinstance(r, Exception) and r is not None]
         return result_list
+
+    async def read_resource(self, server_id: str, uri: str, timeout: float | None = None):
+        """Read a remote resource via the routed MCP client."""
+        await self.ensure_feature_cache("resource")
+        effective_timeout = timeout or float(getattr(config, "MCP_READ_RESOURCE_TIMEOUT", 60.0))
+        response = await self._send_message_wait_response(
+            server_id,
+            RouteMessage(function_name='read_resource', args=(uri,), kwargs={}),
+            timeout=effective_timeout,
+        )
+        return getattr(response, "result", None) if response else None
 
