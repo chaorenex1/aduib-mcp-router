@@ -20,7 +20,7 @@ async def search_tool(query: str, limit: int = 5) -> list[dict[str, Any]]:
 async def list_tools() -> list[dict[str, Any]]:
     """List all available tools."""
     logger.debug("list_tools called")
-    results = await router_manager.list_tools()
+    results = await router_manager.list_tool_names()
     return results
 
 
