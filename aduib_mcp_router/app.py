@@ -21,6 +21,9 @@ async def run_mcp_server():
     app.router_manager = router_manager
     app_context.set(app)
 
+    # Warm up all MCP clients/features before serving requests
+    await router_manager.initialize_all_features()
+
     # Set router manager on factory for lifespan management
     mcp_factory.set_router_manager(router_manager)
 
