@@ -32,7 +32,7 @@ class MCPFactory:
         # Initialize MCP clients on startup
         if self.router_manager:
             log.info("Initializing MCP clients...")
-            # await self.router_manager.initialize_clients()
+            await self.router_manager.initialize_clients()
             log.info("MCP clients initialized successfully")
 
         try:
