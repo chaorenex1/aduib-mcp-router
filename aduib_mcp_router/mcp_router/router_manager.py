@@ -606,7 +606,7 @@ class RouterManager:
             for tool in tool_list:
                 tools.append(
                     {
-                        "tool_name": getattr(tool, "tool_name", None),
+                        "tool_name": getattr(tool, "name", None),
                         "description": getattr(tool, "description", None),
                     }
                 )
