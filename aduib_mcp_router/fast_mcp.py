@@ -798,6 +798,8 @@ class FastMCP:
             except Exception as exc:  # noqa: BLE001
                 # Prevent transport errors (e.g. SSE disconnects) from tearing down the session manager
                 logger.error("StreamableHTTP handling error: %s", exc, exc_info=exc)
+            except BaseExceptionGroup as exc:  # Python 3.11+ task-group errors
+                logger.error("StreamableHTTP handling error group: %s", exc, exc_info=exc)
 
         # Create routes
         routes: list[Route | Mount] = []
