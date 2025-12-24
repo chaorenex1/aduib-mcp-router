@@ -793,7 +793,11 @@ class FastMCP:
         async def handle_streamable_http(
             scope: Scope, receive: Receive, send: Send
         ) -> None:
-            await self.session_manager.handle_request(scope, receive, send)
+            try:
+                await self.session_manager.handle_request(scope, receive, send)
+            except Exception as exc:  # noqa: BLE001
+                # Prevent transport errors (e.g. SSE disconnects) from tearing down the session manager
+                logger.error("StreamableHTTP handling error: %s", exc, exc_info=exc)
 
         # Create routes
         routes: list[Route | Mount] = []
