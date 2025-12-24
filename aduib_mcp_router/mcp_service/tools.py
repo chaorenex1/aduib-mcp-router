@@ -10,19 +10,19 @@ router_manager= app.router_manager
 
 
 @mcp.tool()
-async def search_tool(query: str, limit: int = 5) -> dict[str, Any]:
+async def search_tool(query: str, limit: int = 5) -> list[dict[str, Any]]:
     """Search available tools using the vector database."""
     logger.debug("search_tool called with query=%s limit=%s", query, limit)
     results = await router_manager.search_tools(query, limit)
-    return {"query": query, "results": results}
+    return results
 
 
 @mcp.tool()
-async def search_tool_prompts(query: str, limit: int = 5) -> dict[str, Any]:
+async def search_tool_prompts(query: str, limit: int = 5) -> list[dict[str, Any]]:
     """Search stored prompt templates that describe how to use tools."""
     logger.debug("search_tool_prompts called with query=%s limit=%s", query, limit)
     results = await router_manager.search_prompts(query, limit)
-    return {"query": query, "results": results}
+    return results
 
 
 @mcp.tool()
@@ -33,11 +33,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> list[Any]:
 
 
 @mcp.tool()
-async def search_resources(query: str, limit: int = 5) -> dict[str, Any]:
+async def search_resources(query: str, limit: int = 5) -> list[dict[str, Any]]:
     """Search available resources using the vector database."""
     logger.debug("search_resources called with query=%s limit=%s", query, limit)
     results = await router_manager.search_resources(query, limit)
-    return {"query": query, "results": results}
+    return results
 
 
 @mcp.tool()
