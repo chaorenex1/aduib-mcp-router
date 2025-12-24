@@ -14,6 +14,10 @@ You MUST use the available tools to retrieve factual information instead of gues
 
 You have access to the following tools:
 
+1. list_tools:
+    - Use this to get a list of all available tools with their descriptions.
+    - Call Search_Tool to discover tools details.
+
 1. search_tool  
    - Use this to search for relevant information using a free-text query.
    - Prefer this tool when the user request is broad, unclear, or exploratory.
