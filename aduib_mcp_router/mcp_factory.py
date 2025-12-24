@@ -28,17 +28,15 @@ class MCPFactory:
     async def create_lifespan(self, mcp: FastMCP) -> AsyncIterator[None]:
         """Lifespan context manager for MCP client initialization and cleanup."""
         log.info("Starting MCP application lifespan...")
-
-        # Initialize MCP clients on startup
-        if self.router_manager:
-            log.info("Initializing MCP clients and feature caches...")
-            # await self.router_manager.initialize_all_features()
-            log.info("MCP clients and features initialized successfully")
-
         try:
+            # Initialize MCP clients on startup
             yield
+        except Exception as exc:  # noqa: BLE001
+            log.error("Error during MCP lifespan: %s", exc, exc_info=exc)
+            raise
         finally:
             # Cleanup MCP clients on shutdown
+            log.info("Shutting down MCP application lifespan...")
             if self.router_manager:
                 log.info("Cleaning up MCP clients...")
                 await self.router_manager.cleanup_clients()
@@ -54,7 +52,6 @@ class MCPFactory:
                 instructions=config.APP_DESCRIPTION,
                 version=config.APP_VERSION,
                 auth_server_provider=ApiKeyAuthorizationServerProvider() if config.AUTH_ENABLED else None,
-                lifespan=self.create_lifespan
             )
         else:
             if config.DISCOVERY_SERVICE_TYPE=="nacos":
@@ -78,7 +75,6 @@ class MCPFactory:
                     instructions=config.APP_DESCRIPTION,
                     version=config.APP_VERSION,
                     auth_server_provider=ApiKeyAuthorizationServerProvider() if config.AUTH_ENABLED else None,
-                    lifespan=self.create_lifespan
                 )
         log.info("fast mcp initialized successfully")
         return mcp

@@ -1,11 +1,13 @@
 import asyncio
 import logging
+from asyncio import CancelledError
 from contextlib import AsyncExitStack, AbstractAsyncContextManager
 from datetime import timedelta
 from types import TracebackType
 from typing import Any, Optional, Self, Callable, cast
 
 import anyio
+from httpx import HTTPError
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -76,7 +78,7 @@ class McpClient:
             self._initialized = True
             logger.debug(f"MCP client {self.server.name} initialized")
             return self
-        except BaseException:
+        except Exception or CancelledError:
             # If initialization fails, ensure proper cleanup in this task
             self._initialized = False
             try:
@@ -87,7 +89,7 @@ class McpClient:
                     exc_type, exc_val, exc_tb = sys.exc_info()
                     await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
                     self._task_group = None
-            raise
+            logger.error(f"MCP client {self.server.name} failed to initialize")
 
     async def __aexit__(
             self,
@@ -124,12 +126,16 @@ class McpClient:
         try:
             # ExitStack will handle proper cleanup of all managed context managers
             await self.async_exit_stack.aclose()
-        except Exception:
+        except Exception or CancelledError or HTTPError:
             logger.exception("Error during cleanup")
         finally:
             self._session = None
             self._session_context = None
             self._streams_context = None
+
+    def get_initialize_state(self)-> bool:
+        """Initialize the client state."""
+        return self._initialized
 
     async def _initialize(
             self,

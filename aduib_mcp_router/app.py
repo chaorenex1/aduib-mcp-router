@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from aduib_mcp_router.app_factory import create_app
 from aduib_mcp_router.libs import app_context
@@ -21,9 +22,6 @@ async def run_mcp_server():
     app.router_manager = router_manager
     app_context.set(app)
 
-    # Warm up all MCP clients/features before serving requests
-    await router_manager.initialize_all_features()
-
     # Set router manager on factory for lifespan management
     mcp_factory.set_router_manager(router_manager)
 
@@ -38,5 +36,23 @@ async def run_mcp_server():
 #     await router_manager.run_mcp_clients(callbacks=callbacks)
 
 
+async def warmup_router():
+    """Initialize router manager clients/features after app startup."""
+    if not app or not app.router_manager:
+        return
+    try:
+        await app.router_manager.initialize_all_features()
+    except Exception as exc:  # noqa: BLE001
+        # Log warmup errors but don't crash the application
+        logging.getLogger(__name__).error("Router warmup failed: %s", exc, exc_info=exc)
+
+
 def main():
-    asyncio.run(run_mcp_server())
+    async def runner():
+        # Start MCP server and warmup concurrently
+        server_task = asyncio.create_task(run_mcp_server())
+        warmup_task = asyncio.create_task(warmup_router())
+        await server_task
+        await warmup_task
+
+    asyncio.run(runner())

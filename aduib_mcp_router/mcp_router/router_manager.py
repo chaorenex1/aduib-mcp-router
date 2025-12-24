@@ -4,8 +4,11 @@ import logging
 import os
 import sys
 import traceback
+from asyncio import CancelledError
 from pathlib import Path
 from typing import Any, Callable, Awaitable
+
+from httpx import HTTPError
 
 from aduib_mcp_router.configs import config
 from aduib_mcp_router.configs.remote.nacos.client import NacosClient
@@ -35,14 +38,7 @@ class RouterManager:
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
         self._clients_initialized = False
         self._feature_initialized: dict[str, bool] = {"tool": False, "resource": False, "prompt": False}
-        # Track per-server status for init failures / circuit breaking
         self._mcp_server_status: dict[str, dict[str, Any]] = {}
-
-        # Optional semaphores for controlling concurrency of inits and feature syncs
-        init_limit = getattr(config, "MCP_MAX_INIT_CONCURRENCY", 5)
-        feature_limit = getattr(config, "MCP_MAX_FEATURE_CONCURRENCY", 5)
-        self._init_semaphore = asyncio.Semaphore(init_limit) if init_limit > 0 else None
-        self._feature_semaphore = asyncio.Semaphore(feature_limit) if feature_limit > 0 else None
 
         self.route_home = self.init_router_home()
         if not self.check_bin_exists('bun'):
@@ -204,9 +200,10 @@ class RouterManager:
                     success.append(server.name)
                 else:
                     failed.append(server.name)
-            except Exception as e:  # noqa: BLE001
+            except (HTTPError, BaseException) as e:
                 failed.append(server.name)
                 logger.error(f"Error initializing client for server '{server.name}': {e}")
+                # Treat BaseException (e.g. ExceptionGroup) same as other failures
 
         self._clients_initialized = True
         logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
@@ -225,7 +222,12 @@ class RouterManager:
             logger.error(f"No MCP server config found for id={server_id}")
             return None
 
-        status = self._mcp_server_status.setdefault(server_id, {})
+        status = self._mcp_server_status.setdefault(server_id, {
+            "fail_count": 0,
+            "last_error": None,
+            "last_init_time": None,
+            "circuit_until": None,
+        })
         fail_count = status.get("fail_count", 0)
         circuit_until = status.get("circuit_until")
         now = asyncio.get_event_loop().time()
@@ -233,37 +235,29 @@ class RouterManager:
             logger.warning(f"Skipping initialization for server {server.name} (circuit open)")
             return None
 
-        init_timeout = getattr(config, "MCP_INIT_TIMEOUT", 30.0)
-
-        async def _do_init() -> McpClient | None:
-            client = McpClient(server)
-            try:
-                await client.__aenter__()
+        client = McpClient(server)
+        try:
+            await client.__aenter__()
+            if client.get_initialize_state:
                 status["fail_count"] = 0
                 status["last_error"] = None
                 status["last_init_time"] = now
                 logger.info(f"Client '{server.name}' initialized successfully")
                 return client
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to initialize client for server '{server.name}': {e}")
-                traceback.print_exc()
-                status["fail_count"] = fail_count + 1
-                status["last_error"] = str(e)
-                # Basic backoff: open circuit for some seconds when failures accumulate
-                backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
-                status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
-                return None
-
-        try:
-            # One-by-one init: no concurrency semaphore here
-            return await asyncio.wait_for(_do_init(), timeout=init_timeout)
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout while initializing client for server '{server.name}'")
-            status["fail_count"] = fail_count + 1
-            status["last_error"] = "init timeout"
+            status["fail_count"] += 1
+            status["last_error"] = "unknown initialization failure"
             backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
             status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
-            return None
+            logger.error(f"Client '{server.name}' failed to initialize for unknown reasons")
+        except (HTTPError, BaseException) as e:
+            logger.error(f"Failed to initialize client for server '{server.name}': {e}")
+            traceback.print_exc()
+            status["fail_count"] = fail_count + 1
+            status["last_error"] = str(e)
+            # Basic backoff: open circuit for some seconds when failures accumulate
+            backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
+            status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
+        return None
 
     async def get_or_create_client(self, server_id: str) -> McpClient | None:
         """Get or lazily initialize an MCP client for a given server id."""
@@ -296,11 +290,12 @@ class RouterManager:
         """Clean up all MCP client connections."""
         logger.info("Cleaning up MCP clients...")
         for server_id, client in list(self._mcp_client_cache.items()):
-            try:
-                logger.info(f"Cleaning up client for server ID: {server_id}")
-                await client.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"Error cleaning up client {server_id}: {e}")
+            if client and client.get_initialize_state:
+                try:
+                    logger.info(f"Cleaning up client for server ID: {server_id}")
+                    await client.__aexit__(None, None, None)
+                except Exception as e:
+                    logger.error(f"Error cleaning up client {server_id}: {e}")
 
         self._mcp_client_cache.clear()
         self._clients_initialized = False
@@ -317,44 +312,26 @@ class RouterManager:
 
         This pulls feature metadata from all available servers and updates local caches.
         """
-        try:
-            await self.initialize_clients()
-        except asyncio.CancelledError:
-            logger.debug("Feature initialization for %s cancelled while waiting for clients.", feature_type)
-            raise
-        tasks = []
         success: list[str] = []
         failed: list[str] = []
 
-        async def _sync_server(server_id: str):
+        for server_id in self._mcp_server_cache.keys():
             server = self._mcp_server_cache.get(server_id)
-            if not server:
-                return
-            try:
-                # Ensure client exists (lazy) but ignore failures here
-                await self.get_or_create_client(server_id)
-                if self._feature_semaphore is not None:
-                    async with self._feature_semaphore:
-                        await self.cache_mcp_features(feature_type, server_id)
-                        await self.refresh(feature_type, server_id)
-                else:
+            client=await self.get_or_create_client(server_id)
+            if client and client.get_initialize_state:
+                try:
                     await self.cache_mcp_features(feature_type, server_id)
                     await self.refresh(feature_type, server_id)
-                success.append(server.name)
-            except Exception as e:  # noqa: BLE001
+                    success.append(server.name)
+                    self._feature_initialized[feature_type] = True
+                    logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
+                except (HTTPError, BaseException) as e:
+                    failed.append(server.name)
+                    logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}': {e}")
+            else:
                 failed.append(server.name)
-                logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}': {e}")
+                logger.error(f"Skipping feature initialization for server '{server.name}' (client not initialized)")
 
-        for server_id in self._mcp_server_cache.keys():
-            tasks.append(_sync_server(server_id))
-
-        if not tasks:
-            return
-
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-        logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
-        self._feature_initialized[feature_type] = True
         if failed:
             logger.warning(f"Feature '{feature_type}' init failed MCPs: {failed}")
 
