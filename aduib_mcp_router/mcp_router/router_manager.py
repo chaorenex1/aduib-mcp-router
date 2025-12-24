@@ -204,6 +204,9 @@ class RouterManager:
 
     def _handle_client_init_done(self, task: asyncio.Task[Any]):
         """Log errors from background initialization tasks."""
+        if task.cancelled():
+            logger.debug("Background MCP client initialization task was cancelled.")
+            return
         exc = task.exception()
         if exc:
             logger.error("Background MCP client initialization failed: %s", exc)
@@ -235,6 +238,9 @@ class RouterManager:
     def _handle_feature_task_done(self, feature_type: str, task: asyncio.Task[Any]):
         """Cleanup bookkeeping when a feature sync task completes."""
         self._feature_init_tasks.pop(feature_type, None)
+        if task.cancelled():
+            logger.debug("Feature sync task for %s was cancelled.", feature_type)
+            return
         exc = task.exception()
         if exc:
             logger.error("Background feature sync for %s failed: %s", feature_type, exc)
@@ -399,7 +405,11 @@ class RouterManager:
 
         This pulls feature metadata from all available servers and updates local caches.
         """
-        await self.initialize_clients()
+        try:
+            await self.initialize_clients()
+        except asyncio.CancelledError:
+            logger.debug("Feature initialization for %s cancelled while waiting for clients.", feature_type)
+            raise
         tasks = []
         success: list[str] = []
         failed: list[str] = []
