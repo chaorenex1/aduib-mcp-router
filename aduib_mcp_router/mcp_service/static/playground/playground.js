@@ -972,16 +972,21 @@ function startAutoRefresh() {
 
 // Init
 async function init() {
+  console.log('[MCP Playground] Initializing...');
   initTheme();
   bindEvents();
 
-  // Fast initial load using cached data
-  await refreshData({ fast: true, silent: true });
-
-  // Then load full data in background after initial render
-  setTimeout(() => refreshData({ silent: true }), 100);
+  // Always load data on page load (no fast mode on first load)
+  console.log('[MCP Playground] Loading data...');
+  await refreshData({ silent: false });
 
   startAutoRefresh();
+  console.log('[MCP Playground] Init complete');
 }
 
-init();
+// Run init when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

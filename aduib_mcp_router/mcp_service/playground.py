@@ -121,7 +121,7 @@ async def playground_css(request):
     """Return the CSS file."""
     css_path = STATIC_DIR / "playground.css"
     if css_path.exists():
-        return FileResponse(css_path, media_type="text/css", headers={"Cache-Control": "public, max-age=3600"})
+        return FileResponse(css_path, media_type="text/css", headers={"Cache-Control": "no-store, max-age=0"})
     return JSONResponse({"error": "playground.css not found"}, status_code=404)
 
 
@@ -130,7 +130,7 @@ async def playground_js(request):
     """Return the JavaScript file."""
     js_path = STATIC_DIR / "playground.js"
     if js_path.exists():
-        return FileResponse(js_path, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600"})
+        return FileResponse(js_path, media_type="application/javascript", headers={"Cache-Control": "no-store, max-age=0"})
     return JSONResponse({"error": "playground.js not found"}, status_code=404)
 
 
