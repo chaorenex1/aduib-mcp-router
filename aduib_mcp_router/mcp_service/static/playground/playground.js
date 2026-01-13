@@ -26,6 +26,7 @@ const api = {
   getData: () => fetch(new URL('data', BASE_URL)).then(r => r.json()),
   getServerStatus: () => fetch(new URL('server-status', BASE_URL)).then(r => r.json()),
   getHealthInfo: () => fetch(new URL('health-info', BASE_URL)).then(r => r.json()),
+  listServers: () => fetch(new URL('list-servers', BASE_URL)).then(r => r.json()),
   callTool: (name, args) => fetch(new URL('call-tool', BASE_URL), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -39,6 +40,22 @@ const api = {
     return fetch(u).then(r => r.json());
   },
   forceReconnect: (serverId) => fetch(new URL('force-reconnect', BASE_URL), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_id: serverId })
+  }).then(r => r.json()),
+  // Server lifecycle control APIs
+  startServer: (serverId) => fetch(new URL('start-server', BASE_URL), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_id: serverId })
+  }).then(r => r.json()),
+  stopServer: (serverId) => fetch(new URL('stop-server', BASE_URL), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_id: serverId })
+  }).then(r => r.json()),
+  restartServer: (serverId) => fetch(new URL('restart-server', BASE_URL), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ server_id: serverId })
@@ -149,6 +166,7 @@ function renderServerList() {
   for (const server of state.data.servers) {
     const health = server.health || {};
     const statusClass = statusToClass(health.status);
+    const isRunning = health.status === 'healthy' || health.status === 'degraded' || health.status === 'connecting';
     const item = document.createElement('div');
     item.className = `server-item${state.selectedServerId === server.id ? ' active' : ''}`;
     item.innerHTML = `
@@ -160,9 +178,28 @@ function renderServerList() {
           <span>${health.latency_ms ? health.latency_ms.toFixed(0) + 'ms' : '-'}</span>
         </div>
       </div>
+      <div class="server-actions">
+        ${isRunning
+          ? `<button class="btn-icon-sm btn-stop" data-server-id="${esc(server.id)}" title="Stop Server">
+               <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+             </button>`
+          : `<button class="btn-icon-sm btn-start" data-server-id="${esc(server.id)}" title="Start Server">
+               <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 19,12 8,19"/></svg>
+             </button>`
+        }
+      </div>
     `;
-    item.addEventListener('click', () => selectServer(server.id));
-    item.addEventListener('dblclick', () => openServerModal(server.id));
+    // Click on server info to select
+    item.querySelector('.server-info').addEventListener('click', () => selectServer(server.id));
+    item.querySelector('.status-dot').addEventListener('click', () => selectServer(server.id));
+    item.addEventListener('dblclick', (e) => {
+      if (!e.target.closest('.server-actions')) openServerModal(server.id);
+    });
+    // Start/Stop button handlers
+    const startBtn = item.querySelector('.btn-start');
+    const stopBtn = item.querySelector('.btn-stop');
+    if (startBtn) startBtn.addEventListener('click', (e) => { e.stopPropagation(); startServer(server.id); });
+    if (stopBtn) stopBtn.addEventListener('click', (e) => { e.stopPropagation(); stopServer(server.id); });
     el.appendChild(item);
   }
 }
@@ -290,7 +327,7 @@ function renderDetail() {
     `;
 
     healthPanel.style.display = 'block';
-    renderHealthGrid(health);
+    renderHealthGrid(health, server.id);
 
     executorEmpty.style.display = 'block';
     toolForm.style.display = 'none';
@@ -335,10 +372,11 @@ function renderDetail() {
   }
 }
 
-function renderHealthGrid(health) {
+function renderHealthGrid(health, serverId) {
   const el = document.getElementById('healthGrid');
   const status = health.status || 'disconnected';
   const statusClass = status === 'healthy' ? 'success' : (status === 'degraded' ? 'warning' : 'error');
+  const isRunning = status === 'healthy' || status === 'degraded' || status === 'connecting';
 
   el.innerHTML = `
     <div class="health-item">
@@ -358,6 +396,26 @@ function renderHealthGrid(health) {
       <div class="value">${health.uptime_seconds ? formatUptime(health.uptime_seconds) : '-'}</div>
     </div>
   `;
+
+  // Update action buttons in health panel
+  const actionBtns = document.getElementById('healthActionBtns');
+  if (actionBtns && serverId) {
+    actionBtns.innerHTML = isRunning
+      ? `<button class="btn btn-sm btn-warning" id="stopServerBtn">Stop</button>
+         <button class="btn btn-sm btn-primary" id="restartServerBtn">Restart</button>
+         <button class="btn btn-sm btn-danger" id="reconnectBtn">Force Reconnect</button>`
+      : `<button class="btn btn-sm btn-success" id="startServerBtn">Start</button>`;
+
+    const startBtn = actionBtns.querySelector('#startServerBtn');
+    const stopBtn = actionBtns.querySelector('#stopServerBtn');
+    const restartBtn = actionBtns.querySelector('#restartServerBtn');
+    const reconnectBtn = actionBtns.querySelector('#reconnectBtn');
+
+    if (startBtn) startBtn.addEventListener('click', () => startServer(serverId));
+    if (stopBtn) stopBtn.addEventListener('click', () => stopServer(serverId));
+    if (restartBtn) restartBtn.addEventListener('click', () => restartServer(serverId));
+    if (reconnectBtn) reconnectBtn.addEventListener('click', () => forceReconnect(serverId));
+  }
 }
 
 function formatUptime(seconds) {
@@ -519,6 +577,7 @@ function openServerModal(serverId) {
   const healthGrid = document.getElementById('modalHealthGrid');
   const status = health.status || 'disconnected';
   const statusClass = status === 'healthy' ? 'success' : (status === 'degraded' ? 'warning' : 'error');
+  const isRunning = status === 'healthy' || status === 'degraded' || status === 'connecting';
 
   healthGrid.innerHTML = `
     <div class="health-item">
@@ -539,7 +598,29 @@ function openServerModal(serverId) {
     </div>
   `;
 
-  document.getElementById('modalReconnectBtn').onclick = () => forceReconnect(serverId);
+  // Update modal footer buttons based on server state
+  const modalFooter = document.querySelector('#serverModal .modal-footer');
+  modalFooter.innerHTML = isRunning
+    ? `<button class="btn btn-warning" id="modalStopBtn">Stop</button>
+       <button class="btn btn-primary" id="modalRestartBtn">Restart</button>
+       <button class="btn btn-danger" id="modalReconnectBtn">Force Reconnect</button>
+       <button class="btn" id="modalCloseBtn">Close</button>`
+    : `<button class="btn btn-success" id="modalStartBtn">Start</button>
+       <button class="btn" id="modalCloseBtn">Close</button>`;
+
+  // Bind event handlers
+  const startBtn = modalFooter.querySelector('#modalStartBtn');
+  const stopBtn = modalFooter.querySelector('#modalStopBtn');
+  const restartBtn = modalFooter.querySelector('#modalRestartBtn');
+  const reconnectBtn = modalFooter.querySelector('#modalReconnectBtn');
+  const closeBtn = modalFooter.querySelector('#modalCloseBtn');
+
+  if (startBtn) startBtn.addEventListener('click', () => { startServer(serverId); closeServerModal(); });
+  if (stopBtn) stopBtn.addEventListener('click', () => { stopServer(serverId); closeServerModal(); });
+  if (restartBtn) restartBtn.addEventListener('click', () => { restartServer(serverId); closeServerModal(); });
+  if (reconnectBtn) reconnectBtn.addEventListener('click', () => { forceReconnect(serverId); closeServerModal(); });
+  if (closeBtn) closeBtn.addEventListener('click', closeServerModal);
+
   document.getElementById('serverModal').classList.add('show');
 }
 
@@ -619,6 +700,57 @@ async function forceReconnect(serverId) {
     setTimeout(refreshData, 2000);
   } catch (e) {
     toast('Error', 'Reconnect failed: ' + e.message);
+  }
+}
+
+async function startServer(serverId) {
+  const server = state.data.servers.find(s => s.id === serverId);
+  const serverName = server?.name || serverId;
+  toast('Starting...', serverName);
+  try {
+    const result = await api.startServer(serverId);
+    if (result.success) {
+      toast('Started', result.message || `${serverName} started successfully`);
+    } else {
+      toast('Failed', result.message || 'Failed to start server');
+    }
+    setTimeout(refreshData, 1000);
+  } catch (e) {
+    toast('Error', 'Start failed: ' + e.message);
+  }
+}
+
+async function stopServer(serverId) {
+  const server = state.data.servers.find(s => s.id === serverId);
+  const serverName = server?.name || serverId;
+  toast('Stopping...', serverName);
+  try {
+    const result = await api.stopServer(serverId);
+    if (result.success) {
+      toast('Stopped', result.message || `${serverName} stopped successfully`);
+    } else {
+      toast('Failed', result.message || 'Failed to stop server');
+    }
+    setTimeout(refreshData, 1000);
+  } catch (e) {
+    toast('Error', 'Stop failed: ' + e.message);
+  }
+}
+
+async function restartServer(serverId) {
+  const server = state.data.servers.find(s => s.id === serverId);
+  const serverName = server?.name || serverId;
+  toast('Restarting...', serverName);
+  try {
+    const result = await api.restartServer(serverId);
+    if (result.success) {
+      toast('Restarted', result.message || `${serverName} restarted successfully`);
+    } else {
+      toast('Failed', result.message || 'Failed to restart server');
+    }
+    setTimeout(refreshData, 1500);
+  } catch (e) {
+    toast('Error', 'Restart failed: ' + e.message);
   }
 }
 

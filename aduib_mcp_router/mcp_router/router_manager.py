@@ -1162,3 +1162,260 @@ class RouterManager:
                 reconnected.append(server_id)
         return reconnected
 
+    # ==================== Server Lifecycle Control API ====================
+
+    async def start_server(self, server_id: str) -> dict[str, Any]:
+        """Start a specific MCP server by server ID.
+
+        If the server is already running, returns current status.
+        Only works for stdio-type servers (local process).
+
+        Args:
+            server_id: The server ID to start
+
+        Returns:
+            Dict with status information:
+            - success: bool
+            - server_id: str
+            - server_name: str
+            - status: str (health status)
+            - message: str
+        """
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            return {
+                "success": False,
+                "server_id": server_id,
+                "server_name": None,
+                "status": "not_found",
+                "message": f"Server with ID '{server_id}' not found in configuration"
+            }
+
+        # Check if client already exists and is initialized
+        existing_client = self._mcp_client_cache.get(server_id)
+        if existing_client and existing_client.get_initialize_state():
+            health_status = existing_client.get_health_status()
+            return {
+                "success": True,
+                "server_id": server_id,
+                "server_name": server.name,
+                "status": health_status.value,
+                "message": f"Server '{server.name}' is already running"
+            }
+
+        # Create and initialize the client
+        try:
+            client = await self.get_or_create_client(server_id)
+            if client and client.get_initialize_state():
+                # Initialize feature caches for this server
+                for feature in ("tool", "resource", "prompt"):
+                    try:
+                        await self.cache_mcp_features(feature, server_id)
+                        await self.refresh(feature, server_id)
+                        self._update_cache_metadata(server_id, feature)
+                    except Exception as e:
+                        logger.warning(f"Failed to cache {feature} for {server.name}: {e}")
+
+                health_status = client.get_health_status()
+                logger.info(f"Server '{server.name}' started successfully")
+                return {
+                    "success": True,
+                    "server_id": server_id,
+                    "server_name": server.name,
+                    "status": health_status.value,
+                    "message": f"Server '{server.name}' started successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "server_id": server_id,
+                    "server_name": server.name,
+                    "status": "failed",
+                    "message": f"Failed to initialize server '{server.name}'"
+                }
+        except Exception as e:
+            logger.error(f"Error starting server '{server.name}': {e}")
+            return {
+                "success": False,
+                "server_id": server_id,
+                "server_name": server.name,
+                "status": "error",
+                "message": f"Error starting server: {str(e)}"
+            }
+
+    async def stop_server(self, server_id: str) -> dict[str, Any]:
+        """Stop a specific MCP server by server ID.
+
+        This will close the client connection and remove it from cache.
+        The server configuration remains and can be started again.
+
+        Args:
+            server_id: The server ID to stop
+
+        Returns:
+            Dict with status information:
+            - success: bool
+            - server_id: str
+            - server_name: str
+            - status: str
+            - message: str
+        """
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            return {
+                "success": False,
+                "server_id": server_id,
+                "server_name": None,
+                "status": "not_found",
+                "message": f"Server with ID '{server_id}' not found in configuration"
+            }
+
+        client = self._mcp_client_cache.get(server_id)
+        if not client:
+            return {
+                "success": True,
+                "server_id": server_id,
+                "server_name": server.name,
+                "status": "stopped",
+                "message": f"Server '{server.name}' is already stopped"
+            }
+
+        try:
+            # Close the client connection
+            if client.get_initialize_state():
+                logger.info(f"Stopping server '{server.name}'...")
+                await client.__aexit__(None, None, None)
+
+            # Remove from client cache
+            self._mcp_client_cache.pop(server_id, None)
+
+            # Clear feature caches for this server
+            self._mcp_server_tools_cache.pop(server_id, None)
+            self._mcp_server_resources_cache.pop(server_id, None)
+            self._mcp_server_prompts_cache.pop(server_id, None)
+            self._cache_metadata.pop(server_id, None)
+
+            # Clear vector cache entries for this server
+            keys_to_remove = [k for k in self._mcp_vector_cache.keys() if f"-{server_id}-" in k]
+            for key in keys_to_remove:
+                self._mcp_vector_cache.pop(key, None)
+
+            # Remove per-server lock if exists
+            async with self._client_creation_global_lock:
+                self._client_creation_locks.pop(server_id, None)
+
+            # Reset circuit breaker status
+            self._mcp_server_status.pop(server_id, None)
+
+            logger.info(f"Server '{server.name}' stopped successfully")
+            return {
+                "success": True,
+                "server_id": server_id,
+                "server_name": server.name,
+                "status": "stopped",
+                "message": f"Server '{server.name}' stopped successfully"
+            }
+        except Exception as e:
+            logger.error(f"Error stopping server '{server.name}': {e}")
+            return {
+                "success": False,
+                "server_id": server_id,
+                "server_name": server.name,
+                "status": "error",
+                "message": f"Error stopping server: {str(e)}"
+            }
+
+    async def restart_server(self, server_id: str) -> dict[str, Any]:
+        """Restart a specific MCP server by server ID.
+
+        This stops the server and starts it again.
+
+        Args:
+            server_id: The server ID to restart
+
+        Returns:
+            Dict with status information
+        """
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            return {
+                "success": False,
+                "server_id": server_id,
+                "server_name": None,
+                "status": "not_found",
+                "message": f"Server with ID '{server_id}' not found in configuration"
+            }
+
+        logger.info(f"Restarting server '{server.name}'...")
+
+        # Stop first
+        stop_result = await self.stop_server(server_id)
+        if not stop_result.get("success") and stop_result.get("status") != "stopped":
+            return stop_result
+
+        # Start again
+        start_result = await self.start_server(server_id)
+        if start_result.get("success"):
+            start_result["message"] = f"Server '{server.name}' restarted successfully"
+        return start_result
+
+    def get_server_info(self, server_id: str) -> dict[str, Any] | None:
+        """Get detailed information about a specific server.
+
+        Args:
+            server_id: The server ID to query
+
+        Returns:
+            Dict with server information or None if not found
+        """
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            return None
+
+        client = self._mcp_client_cache.get(server_id)
+        is_running = client is not None and client.get_initialize_state()
+
+        health_status = ClientHealthStatus.DISCONNECTED
+        health_info = None
+        if client:
+            health_status = client.get_health_status()
+            health_info = client.get_health_info()
+
+        return {
+            "server_id": server_id,
+            "server_name": server.name,
+            "server_type": server.args.type if server.args else None,
+            "is_running": is_running,
+            "health_status": health_status.value,
+            "health_info": health_info.model_dump() if health_info else None,
+            "command": server.args.command if server.args else None,
+            "url": server.args.url if server.args else None,
+        }
+
+    def list_servers(self) -> list[dict[str, Any]]:
+        """List all configured servers with their current status.
+
+        Returns:
+            List of server information dicts
+        """
+        servers = []
+        for server_id, server in self._mcp_server_cache.items():
+            info = self.get_server_info(server_id)
+            if info:
+                servers.append(info)
+        return servers
+
+    def get_server_id_by_name(self, server_name: str) -> str | None:
+        """Get server ID by server name.
+
+        Args:
+            server_name: The server name to search for
+
+        Returns:
+            Server ID or None if not found
+        """
+        for server_id, server in self._mcp_server_cache.items():
+            if server.name == server_name:
+                return server_id
+        return None
+

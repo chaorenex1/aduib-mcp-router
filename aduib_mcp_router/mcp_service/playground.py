@@ -337,3 +337,191 @@ async def force_reconnect(request):
             return JSONResponse({"success": False, "message": "Server not found or client not initialized"}, status_code=404)
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+# ==================== Server Lifecycle Control API ====================
+
+@mcp.custom_route("/playground/start-server", methods=["POST"])
+async def start_server(request):
+    """Start a specific MCP server.
+
+    Request body: {"server_id": str} or {"server_name": str}
+    Response: {"success": bool, "server_id": str, "server_name": str, "status": str, "message": str}
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "message": f"Invalid JSON body: {e}"}, status_code=400)
+
+    server_id = payload.get("server_id")
+    server_name = payload.get("server_name")
+
+    # Support lookup by name if server_id not provided
+    if not server_id and server_name:
+        server_id = router_manager.get_server_id_by_name(server_name)
+        if not server_id:
+            return JSONResponse({
+                "success": False,
+                "server_id": None,
+                "server_name": server_name,
+                "status": "not_found",
+                "message": f"Server with name '{server_name}' not found"
+            }, status_code=404)
+
+    if not isinstance(server_id, str) or not server_id.strip():
+        return JSONResponse({
+            "success": False,
+            "message": "server_id or server_name must be provided"
+        }, status_code=400)
+
+    try:
+        result = await router_manager.start_server(server_id)
+        status_code = 200 if result.get("success") else 500
+        if result.get("status") == "not_found":
+            status_code = 404
+        return JSONResponse(result, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "server_id": server_id,
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+
+@mcp.custom_route("/playground/stop-server", methods=["POST"])
+async def stop_server(request):
+    """Stop a specific MCP server.
+
+    Request body: {"server_id": str} or {"server_name": str}
+    Response: {"success": bool, "server_id": str, "server_name": str, "status": str, "message": str}
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "message": f"Invalid JSON body: {e}"}, status_code=400)
+
+    server_id = payload.get("server_id")
+    server_name = payload.get("server_name")
+
+    # Support lookup by name if server_id not provided
+    if not server_id and server_name:
+        server_id = router_manager.get_server_id_by_name(server_name)
+        if not server_id:
+            return JSONResponse({
+                "success": False,
+                "server_id": None,
+                "server_name": server_name,
+                "status": "not_found",
+                "message": f"Server with name '{server_name}' not found"
+            }, status_code=404)
+
+    if not isinstance(server_id, str) or not server_id.strip():
+        return JSONResponse({
+            "success": False,
+            "message": "server_id or server_name must be provided"
+        }, status_code=400)
+
+    try:
+        result = await router_manager.stop_server(server_id)
+        status_code = 200 if result.get("success") else 500
+        if result.get("status") == "not_found":
+            status_code = 404
+        return JSONResponse(result, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "server_id": server_id,
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+
+@mcp.custom_route("/playground/restart-server", methods=["POST"])
+async def restart_server(request):
+    """Restart a specific MCP server.
+
+    Request body: {"server_id": str} or {"server_name": str}
+    Response: {"success": bool, "server_id": str, "server_name": str, "status": str, "message": str}
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "message": f"Invalid JSON body: {e}"}, status_code=400)
+
+    server_id = payload.get("server_id")
+    server_name = payload.get("server_name")
+
+    # Support lookup by name if server_id not provided
+    if not server_id and server_name:
+        server_id = router_manager.get_server_id_by_name(server_name)
+        if not server_id:
+            return JSONResponse({
+                "success": False,
+                "server_id": None,
+                "server_name": server_name,
+                "status": "not_found",
+                "message": f"Server with name '{server_name}' not found"
+            }, status_code=404)
+
+    if not isinstance(server_id, str) or not server_id.strip():
+        return JSONResponse({
+            "success": False,
+            "message": "server_id or server_name must be provided"
+        }, status_code=400)
+
+    try:
+        result = await router_manager.restart_server(server_id)
+        status_code = 200 if result.get("success") else 500
+        if result.get("status") == "not_found":
+            status_code = 404
+        return JSONResponse(result, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "server_id": server_id,
+            "status": "error",
+            "message": str(e)
+        }, status_code=500)
+
+
+@mcp.custom_route("/playground/server-info", methods=["GET"])
+async def server_info(request):
+    """Get detailed information about a specific server.
+
+    Query params: server_id=str or server_name=str
+    Response: Server information dict
+    """
+    server_id = request.query_params.get("server_id")
+    server_name = request.query_params.get("server_name")
+
+    # Support lookup by name if server_id not provided
+    if not server_id and server_name:
+        server_id = router_manager.get_server_id_by_name(server_name)
+        if not server_id:
+            return JSONResponse({
+                "error": f"Server with name '{server_name}' not found"
+            }, status_code=404)
+
+    if not server_id:
+        return JSONResponse({
+            "error": "server_id or server_name query parameter is required"
+        }, status_code=400)
+
+    info = router_manager.get_server_info(server_id)
+    if info is None:
+        return JSONResponse({
+            "error": f"Server with ID '{server_id}' not found"
+        }, status_code=404)
+
+    return JSONResponse(info)
+
+
+@mcp.custom_route("/playground/list-servers", methods=["GET"])
+async def list_servers(request):
+    """List all configured servers with their current status.
+
+    Response: {"servers": [server info...]}
+    """
+    servers = router_manager.list_servers()
+    return JSONResponse({"servers": servers})
