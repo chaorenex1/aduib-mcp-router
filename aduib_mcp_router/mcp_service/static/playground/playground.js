@@ -23,7 +23,14 @@ const BASE_URL = (() => {
 })();
 
 const api = {
-  getData: () => fetch(new URL('data', BASE_URL)).then(r => r.json()),
+  // fast=1: use cached data for quick initial load
+  // refresh=1: force reload all data from servers
+  getData: (options = {}) => {
+    const u = new URL('data', BASE_URL);
+    if (options.fast) u.searchParams.set('fast', '1');
+    if (options.refresh) u.searchParams.set('refresh', '1');
+    return fetch(u).then(r => r.json());
+  },
   getServerStatus: () => fetch(new URL('server-status', BASE_URL)).then(r => r.json()),
   getHealthInfo: () => fetch(new URL('health-info', BASE_URL)).then(r => r.json()),
   listServers: () => fetch(new URL('list-servers', BASE_URL)).then(r => r.json()),
@@ -167,6 +174,8 @@ function renderServerList() {
     const health = server.health || {};
     const statusClass = statusToClass(health.status);
     const isRunning = health.status === 'healthy' || health.status === 'degraded' || health.status === 'connecting';
+    // Only stdio servers support start/stop control
+    const isStdio = (server.type || '').toLowerCase() === 'stdio' || !server.type;
     const item = document.createElement('div');
     item.className = `server-item${state.selectedServerId === server.id ? ' active' : ''}`;
     item.innerHTML = `
@@ -178,7 +187,7 @@ function renderServerList() {
           <span>${health.latency_ms ? health.latency_ms.toFixed(0) + 'ms' : '-'}</span>
         </div>
       </div>
-      <div class="server-actions">
+      ${isStdio ? `<div class="server-actions">
         ${isRunning
           ? `<button class="btn-icon-sm btn-stop" data-server-id="${esc(server.id)}" title="Stop Server">
                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
@@ -187,7 +196,7 @@ function renderServerList() {
                <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 19,12 8,19"/></svg>
              </button>`
         }
-      </div>
+      </div>` : ''}
     `;
     // Click on server info to select
     item.querySelector('.server-info').addEventListener('click', () => selectServer(server.id));
@@ -195,11 +204,13 @@ function renderServerList() {
     item.addEventListener('dblclick', (e) => {
       if (!e.target.closest('.server-actions')) openServerModal(server.id);
     });
-    // Start/Stop button handlers
-    const startBtn = item.querySelector('.btn-start');
-    const stopBtn = item.querySelector('.btn-stop');
-    if (startBtn) startBtn.addEventListener('click', (e) => { e.stopPropagation(); startServer(server.id); });
-    if (stopBtn) stopBtn.addEventListener('click', (e) => { e.stopPropagation(); stopServer(server.id); });
+    // Start/Stop button handlers (only for stdio servers)
+    if (isStdio) {
+      const startBtn = item.querySelector('.btn-start');
+      const stopBtn = item.querySelector('.btn-stop');
+      if (startBtn) startBtn.addEventListener('click', (e) => { e.stopPropagation(); startServer(server.id); });
+      if (stopBtn) stopBtn.addEventListener('click', (e) => { e.stopPropagation(); stopServer(server.id); });
+    }
     el.appendChild(item);
   }
 }
@@ -378,6 +389,10 @@ function renderHealthGrid(health, serverId) {
   const statusClass = status === 'healthy' ? 'success' : (status === 'degraded' ? 'warning' : 'error');
   const isRunning = status === 'healthy' || status === 'degraded' || status === 'connecting';
 
+  // Check if server is stdio type
+  const server = state.data.servers.find(s => s.id === serverId);
+  const isStdio = server && ((server.type || '').toLowerCase() === 'stdio' || !server.type);
+
   el.innerHTML = `
     <div class="health-item">
       <div class="label">Status</div>
@@ -397,24 +412,33 @@ function renderHealthGrid(health, serverId) {
     </div>
   `;
 
-  // Update action buttons in health panel
+  // Update action buttons in health panel (only for stdio servers)
   const actionBtns = document.getElementById('healthActionBtns');
   if (actionBtns && serverId) {
-    actionBtns.innerHTML = isRunning
-      ? `<button class="btn btn-sm btn-warning" id="stopServerBtn">Stop</button>
-         <button class="btn btn-sm btn-primary" id="restartServerBtn">Restart</button>
-         <button class="btn btn-sm btn-danger" id="reconnectBtn">Force Reconnect</button>`
-      : `<button class="btn btn-sm btn-success" id="startServerBtn">Start</button>`;
+    if (isStdio) {
+      actionBtns.innerHTML = isRunning
+        ? `<button class="btn btn-sm btn-warning" id="stopServerBtn">Stop</button>
+           <button class="btn btn-sm btn-primary" id="restartServerBtn">Restart</button>
+           <button class="btn btn-sm btn-danger" id="reconnectBtn">Force Reconnect</button>`
+        : `<button class="btn btn-sm btn-success" id="startServerBtn">Start</button>`;
 
-    const startBtn = actionBtns.querySelector('#startServerBtn');
-    const stopBtn = actionBtns.querySelector('#stopServerBtn');
-    const restartBtn = actionBtns.querySelector('#restartServerBtn');
-    const reconnectBtn = actionBtns.querySelector('#reconnectBtn');
+      const startBtn = actionBtns.querySelector('#startServerBtn');
+      const stopBtn = actionBtns.querySelector('#stopServerBtn');
+      const restartBtn = actionBtns.querySelector('#restartServerBtn');
+      const reconnectBtn = actionBtns.querySelector('#reconnectBtn');
 
-    if (startBtn) startBtn.addEventListener('click', () => startServer(serverId));
-    if (stopBtn) stopBtn.addEventListener('click', () => stopServer(serverId));
-    if (restartBtn) restartBtn.addEventListener('click', () => restartServer(serverId));
-    if (reconnectBtn) reconnectBtn.addEventListener('click', () => forceReconnect(serverId));
+      if (startBtn) startBtn.addEventListener('click', () => startServer(serverId));
+      if (stopBtn) stopBtn.addEventListener('click', () => stopServer(serverId));
+      if (restartBtn) restartBtn.addEventListener('click', () => restartServer(serverId));
+      if (reconnectBtn) reconnectBtn.addEventListener('click', () => forceReconnect(serverId));
+    } else {
+      // Non-stdio servers only show reconnect
+      actionBtns.innerHTML = isRunning
+        ? `<button class="btn btn-sm btn-danger" id="reconnectBtn">Force Reconnect</button>`
+        : '';
+      const reconnectBtn = actionBtns.querySelector('#reconnectBtn');
+      if (reconnectBtn) reconnectBtn.addEventListener('click', () => forceReconnect(serverId));
+    }
   }
 }
 
@@ -560,6 +584,9 @@ function openServerModal(serverId) {
   const server = state.data.servers.find(s => s.id === serverId);
   if (!server) return;
 
+  // Check if server is stdio type
+  const isStdio = (server.type || '').toLowerCase() === 'stdio' || !server.type;
+
   document.getElementById('modalServerName').textContent = server.name;
 
   const details = document.getElementById('modalServerDetails');
@@ -598,15 +625,23 @@ function openServerModal(serverId) {
     </div>
   `;
 
-  // Update modal footer buttons based on server state
+  // Update modal footer buttons based on server state and type
   const modalFooter = document.querySelector('#serverModal .modal-footer');
-  modalFooter.innerHTML = isRunning
-    ? `<button class="btn btn-warning" id="modalStopBtn">Stop</button>
-       <button class="btn btn-primary" id="modalRestartBtn">Restart</button>
-       <button class="btn btn-danger" id="modalReconnectBtn">Force Reconnect</button>
-       <button class="btn" id="modalCloseBtn">Close</button>`
-    : `<button class="btn btn-success" id="modalStartBtn">Start</button>
-       <button class="btn" id="modalCloseBtn">Close</button>`;
+  if (isStdio) {
+    modalFooter.innerHTML = isRunning
+      ? `<button class="btn btn-warning" id="modalStopBtn">Stop</button>
+         <button class="btn btn-primary" id="modalRestartBtn">Restart</button>
+         <button class="btn btn-danger" id="modalReconnectBtn">Force Reconnect</button>
+         <button class="btn" id="modalCloseBtn">Close</button>`
+      : `<button class="btn btn-success" id="modalStartBtn">Start</button>
+         <button class="btn" id="modalCloseBtn">Close</button>`;
+  } else {
+    // Non-stdio servers only show reconnect option
+    modalFooter.innerHTML = isRunning
+      ? `<button class="btn btn-danger" id="modalReconnectBtn">Force Reconnect</button>
+         <button class="btn" id="modalCloseBtn">Close</button>`
+      : `<button class="btn" id="modalCloseBtn">Close</button>`;
+  }
 
   // Bind event handlers
   const startBtn = modalFooter.querySelector('#modalStartBtn');
@@ -673,9 +708,13 @@ function downloadFile(content, filename, type) {
 }
 
 // Actions
-async function refreshData() {
+async function refreshData(options = {}) {
+  const { fast = false, refresh = false, silent = false } = options;
   try {
-    const [data, health] = await Promise.all([api.getData(), api.getHealthInfo().catch(() => ({ servers: [] }))]);
+    const [data, health] = await Promise.all([
+      api.getData({ fast, refresh }),
+      api.getHealthInfo().catch(() => ({ servers: [] }))
+    ]);
 
     // Merge health info into servers
     const healthMap = new Map((health.servers || []).map(s => [s.server_id, s]));
@@ -687,10 +726,23 @@ async function refreshData() {
     state.data = data;
     state.searchResults = null;
     renderAll();
-    toast('Refreshed', 'Data loaded successfully');
+    if (!silent) {
+      toast('Refreshed', refresh ? 'Data reloaded from servers' : 'Data loaded successfully');
+    }
   } catch (e) {
     toast('Error', 'Failed to load data: ' + e.message, 5000);
   }
+}
+
+// Quick refresh using cached data only
+async function quickRefresh() {
+  await refreshData({ fast: true, silent: true });
+}
+
+// Full refresh forcing reload from all servers
+async function forceRefresh() {
+  toast('Refreshing...', 'Reloading data from all servers');
+  await refreshData({ refresh: true });
 }
 
 async function forceReconnect(serverId) {
@@ -782,8 +834,8 @@ function bindEvents() {
     setTheme(state.theme === 'dark' ? 'light' : 'dark');
   });
 
-  // Refresh
-  document.getElementById('refreshBtn').addEventListener('click', refreshData);
+  // Refresh - force reload on button click
+  document.getElementById('refreshBtn').addEventListener('click', () => forceRefresh());
 
   // Search
   document.getElementById('searchInput').addEventListener('input', e => {
@@ -922,7 +974,13 @@ function startAutoRefresh() {
 async function init() {
   initTheme();
   bindEvents();
-  await refreshData();
+
+  // Fast initial load using cached data
+  await refreshData({ fast: true, silent: true });
+
+  // Then load full data in background after initial render
+  setTimeout(() => refreshData({ silent: true }), 100);
+
   startAutoRefresh();
 }
 

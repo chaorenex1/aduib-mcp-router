@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from aduib_mcp_router.mcp_router.types import ClientHealthStatus
 
 mcp = app.mcp
 router_manager = app.router_manager
+
+# No global cache tracking needed - use router_manager's cache directly
 
 # Static files directory
 STATIC_DIR = Path(__file__).parent / "static" / "playground"
@@ -80,10 +83,27 @@ def _get_server_health(server_id: str) -> dict[str, Any]:
     }
 
 
-async def _ensure_all_loaded() -> None:
-    await router_manager.list_tools()
-    await router_manager.list_resources()
-    await router_manager.list_prompts()
+async def _ensure_all_loaded(force: bool = False) -> None:
+    """Load all features in parallel. Skip if cached data exists unless force=True."""
+    # Check if we already have cached data (skip loading for speed)
+    if not force and _has_cached_data():
+        return
+    # Parallel loading for better performance
+    await asyncio.gather(
+        router_manager.list_tools(),
+        router_manager.list_resources(),
+        router_manager.list_prompts(),
+        return_exceptions=True
+    )
+
+
+def _has_cached_data() -> bool:
+    """Check if we have any cached data available."""
+    return bool(
+        router_manager._mcp_server_tools_cache or
+        router_manager._mcp_server_resources_cache or
+        router_manager._mcp_server_prompts_cache
+    )
 
 
 # Static file routes
@@ -117,8 +137,21 @@ async def playground_js(request):
 # API endpoints
 @mcp.custom_route("/playground/data", methods=["GET"])
 async def playground_data(request):
-    """Return JSON data with server status and health information."""
-    await _ensure_all_loaded()
+    """Return JSON data with server status and health information.
+
+    Query params:
+    - fast=1: Use cached data only, don't wait for loading (faster initial load)
+    - refresh=1: Force refresh all data from servers
+    """
+    fast_mode = request.query_params.get("fast") == "1"
+    force_refresh = request.query_params.get("refresh") == "1"
+
+    if force_refresh:
+        # Force reload all data
+        await _ensure_all_loaded(force=True)
+    elif not fast_mode or not _has_cached_data():
+        # Normal mode or no cache available - load data
+        await _ensure_all_loaded()
 
     servers_payload: list[dict[str, Any]] = []
     for server in router_manager._mcp_server_cache.values():

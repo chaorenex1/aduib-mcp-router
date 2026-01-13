@@ -1281,10 +1281,18 @@ class RouterManager:
             }
 
         try:
-            # Close the client connection
+            # Gracefully stop the client
             if client.get_initialize_state():
                 logger.info(f"Stopping server '{server.name}'...")
-                await client.__aexit__(None, None, None)
+                # Mark client as not initialized (signals workers to stop)
+                client._initialized = False
+                # Update health status
+                try:
+                    await client._set_health_status(ClientHealthStatus.DISCONNECTED, "Server stopped by user")
+                except Exception:
+                    pass
+                # Clean up underlying streams/session (safer than __aexit__)
+                await client.cleanup()
 
             # Remove from client cache
             self._mcp_client_cache.pop(server_id, None)
