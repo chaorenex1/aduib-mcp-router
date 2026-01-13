@@ -30,6 +30,16 @@ from aduib_mcp_router.utils import random_uuid
 logger = logging.getLogger(__name__)
 
 
+def _format_exception_group(exc: BaseException) -> str:
+    """Format ExceptionGroup to show all sub-exceptions."""
+    if isinstance(exc, ExceptionGroup):
+        parts = [f"{exc.__class__.__name__}: {exc}"]
+        for i, sub_exc in enumerate(exc.exceptions, 1):
+            parts.append(f"  [{i}] {sub_exc.__class__.__name__}: {sub_exc}")
+        return "\n".join(parts)
+    return str(exc)
+
+
 class RouterManager:
     """Factory class for initializing router configurations and directories.
 
@@ -373,8 +383,9 @@ class RouterManager:
                 else:
                     return (server.name, False, "client returned None")
             except (HTTPError, ExceptionGroup, Exception) as e:
-                logger.error(f"Error initializing client for server '{server.name}': {e}")
-                return (server.name, False, str(e))
+                error_detail = _format_exception_group(e)
+                logger.error(f"Error initializing client for server '{server.name}':\n{error_detail}")
+                return (server.name, False, error_detail)
 
         # Create tasks for all servers
         tasks = [
@@ -449,7 +460,8 @@ class RouterManager:
             status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
             logger.error(f"Client '{server.name}' failed to initialize for unknown reasons")
         except (HTTPError, ExceptionGroup, Exception) as e:
-            logger.error(f"Failed to initialize client for server '{server.name}': {e}")
+            error_detail = _format_exception_group(e)
+            logger.error(f"Failed to initialize client for server '{server.name}':\n{error_detail}")
             traceback.print_exc()
             status["fail_count"] = fail_count + 1
             status["last_error"] = str(e)
@@ -582,7 +594,8 @@ class RouterManager:
                     logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
                 except (HTTPError, ExceptionGroup, Exception) as e:
                     failed.append(server.name)
-                    logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}': {e}")
+                    error_detail = _format_exception_group(e)
+                    logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}':\n{error_detail}")
             else:
                 failed.append(server.name)
                 logger.error(f"Skipping feature initialization for server '{server.name}' (client not initialized)")
