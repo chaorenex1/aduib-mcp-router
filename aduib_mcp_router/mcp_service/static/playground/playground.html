@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>MCP Router Playground</title>
+  <link rel="stylesheet" href="/playground/playground.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header card">
+      <div class="brand">
+        <div class="logo"></div>
+        <div class="title">
+          <h1>MCP Router Playground</h1>
+          <p>Explore servers, tools, resources, and prompts</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="search-box">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="searchInput" placeholder="Search... (Ctrl+K)" autocomplete="off" />
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span class="kbd">Ctrl</span><span class="kbd">K</span>
+        </div>
+        <button class="btn" id="themeBtn">Dark</button>
+        <button class="btn btn-primary" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar card">
+      <div class="stat-card">
+        <div class="label">Servers</div>
+        <div class="value" id="statServers">0</div>
+        <div class="sub" id="statServersHealth">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Tools</div>
+        <div class="value" id="statTools">0</div>
+        <div class="sub">available</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Resources</div>
+        <div class="value" id="statResources">0</div>
+        <div class="sub">available</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Prompts</div>
+        <div class="value" id="statPrompts">0</div>
+        <div class="sub">available</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Executions</div>
+        <div class="value" id="statExecs">0</div>
+        <div class="sub" id="statExecsSuccess">-</div>
+      </div>
+    </div>
+
+    <!-- Layout -->
+    <div class="layout">
+      <!-- Sidebar -->
+      <aside class="sidebar card">
+        <!-- Servers -->
+        <div>
+          <div class="section-header">
+            <h2>Servers</h2>
+            <button class="btn btn-sm" id="clearServerBtn">All</button>
+          </div>
+          <div class="server-list" id="serverList"></div>
+        </div>
+
+        <!-- Tabs -->
+        <div>
+          <div class="section-header">
+            <h2>Browse</h2>
+            <span class="badge" id="itemCount">0</span>
+          </div>
+          <div class="tabs">
+            <button class="tab active" data-tab="tools">Tools</button>
+            <button class="tab" data-tab="resources">Resources</button>
+            <button class="tab" data-tab="prompts">Prompts</button>
+          </div>
+        </div>
+
+        <!-- Item List -->
+        <div style="flex:1;display:flex;flex-direction:column;min-height:0;">
+          <div class="item-list" id="itemList"></div>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main card">
+        <div class="detail-header">
+          <div>
+            <h2 id="detailTitle">Select an item</h2>
+            <div class="subtitle" id="detailSubtitle">Choose a server or item from the sidebar to view details.</div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-sm" id="copyBtn" disabled>Copy JSON</button>
+            <button class="btn btn-sm btn-success" id="exportBtn">Export History</button>
+          </div>
+        </div>
+
+        <div class="panels">
+          <!-- Health Panel (for servers) -->
+          <div class="panel" id="healthPanel" style="display:none;">
+            <div class="panel-header">
+              <h3>Health Status</h3>
+              <button class="btn btn-sm btn-danger" id="reconnectBtn">Force Reconnect</button>
+            </div>
+            <div class="health-grid" id="healthGrid"></div>
+          </div>
+
+          <!-- Details Panel -->
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Details</h3>
+            </div>
+            <div class="kv-grid" id="detailKv">
+              <div class="key">Tip</div>
+              <div class="value">Use Ctrl+K to search across all tools, resources, and prompts.</div>
+            </div>
+          </div>
+
+          <!-- Executor Panel -->
+          <div class="panel" id="executorPanel">
+            <div class="panel-header">
+              <h3>Tool Executor</h3>
+              <span id="execHint" style="font-size:11px;color:var(--text-muted);"></span>
+            </div>
+            <div id="executorEmpty">
+              <p style="color:var(--text-secondary);font-size:13px;">Select a tool to generate an input form from its JSON Schema.</p>
+            </div>
+            <form id="toolForm" style="display:none;">
+              <div class="form-grid" id="formContainer"></div>
+              <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+                <button type="submit" class="btn btn-primary" id="executeBtn">Execute Tool</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Response Panel -->
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Response</h3>
+              <button class="btn btn-sm" id="copyResponseBtn" disabled>Copy</button>
+            </div>
+            <div class="response-box" id="responseBox">
+              <span style="color:var(--text-muted);">No response yet. Execute a tool to see results here.</span>
+            </div>
+          </div>
+
+          <!-- History Panel -->
+          <div class="panel">
+            <div class="panel-header">
+              <h3>Execution History</h3>
+              <button class="btn btn-sm btn-danger" id="clearHistoryBtn">Clear</button>
+            </div>
+            <div class="history-list" id="historyList">
+              <p style="color:var(--text-secondary);font-size:13px;">No executions yet.</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Server Detail Modal -->
+  <div class="modal-overlay" id="serverModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalServerName">Server Details</h3>
+        <button class="btn btn-sm btn-icon" id="closeModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="kv-grid" id="modalServerDetails"></div>
+        <div style="margin-top:20px;">
+          <h4 style="font-size:13px;font-weight:600;margin-bottom:10px;">Health Information</h4>
+          <div class="health-grid" id="modalHealthGrid"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="modalReconnectBtn">Force Reconnect</button>
+        <button class="btn" id="modalCloseBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Modal -->
+  <div class="modal-overlay" id="exportModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Export Execution History</h3>
+        <button class="btn btn-sm btn-icon" id="closeExportModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom:16px;color:var(--text-secondary);">Choose export format:</p>
+        <div style="display:flex;gap:12px;">
+          <button class="btn btn-primary" id="exportJsonBtn" style="flex:1;">Export as JSON</button>
+          <button class="btn btn-success" id="exportCsvBtn" style="flex:1;">Export as CSV</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="cancelExportBtn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast">
+    <div class="message"></div>
+    <div class="detail"></div>
+  </div>
+
+  <script src="/playground/playground.js"></script>
+</body>
+</html>

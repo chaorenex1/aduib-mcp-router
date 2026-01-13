@@ -5,7 +5,10 @@ import uuid
 from concurrent import futures
 from types import FunctionType, CoroutineType
 
-async_thread_pool = futures.ThreadPoolExecutor(thread_name_prefix='async_thread_pool')
+async_thread_pool = futures.ThreadPoolExecutor(
+    max_workers=10,  # Limit thread pool size to prevent resource exhaustion
+    thread_name_prefix='async_thread_pool'
+)
 
 class AsyncUtils:
 

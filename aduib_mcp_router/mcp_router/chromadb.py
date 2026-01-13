@@ -8,6 +8,8 @@ from chromadb import Settings, Metadata
 from chromadb.api.types import OneOrMany, Document, ID, QueryResult, GetResult
 from chromadb.types import Collection
 
+from aduib_mcp_router.configs import config
+
 logger=logging.getLogger(__name__)
 
 class ChromaDB:
@@ -15,10 +17,15 @@ class ChromaDB:
 
     def __init__(self, router_home: str) -> None:
         home_chroma_db_ = os.path.join(router_home, 'chromadb')
+
+        # Only reset if explicitly configured (default: preserve data)
+        if config.CHROMADB_RESET_ON_START and os.path.exists(home_chroma_db_):
+            logger.info("Resetting ChromaDB as CHROMADB_RESET_ON_START=True")
+            shutil.rmtree(home_chroma_db_, ignore_errors=True)
+
         if not os.path.exists(home_chroma_db_):
             os.makedirs(home_chroma_db_, exist_ok=True)
-        else:
-            shutil.rmtree(home_chroma_db_, ignore_errors=True)
+
         self.dbClient = chromadb.PersistentClient(path=home_chroma_db_,
                                                   settings=Settings(
                                                       is_persistent=True,
@@ -26,6 +33,7 @@ class ChromaDB:
                                                   ))
         self.preIds = []
         self.collections: dict[str, Collection] = {}
+        logger.info(f"ChromaDB initialized at {home_chroma_db_}")
 
     def create_collection(self, collection_name: str) -> str:
         _collectionId = "aduib_mcp_router_" + collection_name

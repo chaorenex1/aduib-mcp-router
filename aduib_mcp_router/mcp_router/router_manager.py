@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import traceback
 from asyncio import CancelledError
 from pathlib import Path
@@ -18,16 +19,39 @@ from aduib_mcp_router.mcp_router.config_loader.remote_config_loader import Remot
 from aduib_mcp_router.mcp_router.install_bun import install_bun
 from aduib_mcp_router.mcp_router.install_uv import install_uv
 from aduib_mcp_router.mcp_router.mcp_client import McpClient
-from aduib_mcp_router.mcp_router.types import McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv, RouteMessage
+from aduib_mcp_router.mcp_router.types import (
+    McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv, RouteMessage,
+    ClientHealthStatus, ClientHealthInfo, HealthStatusCallback
+)
 from aduib_mcp_router.utils import random_uuid
 
 logger = logging.getLogger(__name__)
 
 
 class RouterManager:
-    """Factory class for initializing router configurations and directories."""
+    """Factory class for initializing router configurations and directories.
+
+    Uses singleton pattern to ensure only one instance exists per process,
+    preventing duplicate ChromaDB instances and resource waste.
+    """
+
+    _instance: "RouterManager | None" = None
+    _instance_lock = threading.Lock()
+
+    def __new__(cls):
+        """Ensure only one RouterManager instance exists (singleton pattern)."""
+        if cls._instance is None:
+            with cls._instance_lock:
+                # Double-check locking pattern
+                if cls._instance is None:
+                    instance = super().__new__(cls)
+                    cls._instance = instance
+        return cls._instance
 
     def __init__(self):
+        # Prevent re-initialization if already initialized (singleton pattern)
+        if hasattr(self, '_initialized') and self._initialized:
+            return
 
         self.app = None
         self._mcp_vector_cache = {}
@@ -39,6 +63,12 @@ class RouterManager:
         self._clients_initialized = False
         self._feature_initialized: dict[str, bool] = {"tool": False, "resource": False, "prompt": False}
         self._mcp_server_status: dict[str, dict[str, Any]] = {}
+        self._stop_event = asyncio.Event()  # Graceful shutdown signal
+        self._updater_task: asyncio.Task | None = None  # Reference to updater task
+
+        # Lock for client creation to prevent race conditions
+        self._client_creation_locks: dict[str, asyncio.Lock] = {}
+        self._client_creation_global_lock = asyncio.Lock()
 
         self.route_home = self.init_router_home()
         if not self.check_bin_exists('bun'):
@@ -50,8 +80,8 @@ class RouterManager:
             if ret_code != 0:
                 raise EnvironmentError("Failed to install 'uvx' binary.")
         config_loader = ConfigLoader.get_config_loader(config.MCP_CONFIG_PATH, self.route_home)
-        if config_loader and  isinstance(config_loader, RemoteConfigLoader):
-            self.nacos_client:NacosClient = config_loader.client
+        if config_loader and isinstance(config_loader, RemoteConfigLoader):
+            self.nacos_client: NacosClient = config_loader.client
         self.mcp_router_json = os.path.join(self.route_home, "mcp_router.json")
         self.resolve_mcp_configs(self.mcp_router_json, config_loader.load())
 
@@ -59,12 +89,30 @@ class RouterManager:
         self.tools_collection = self.ChromaDb.create_collection(collection_name="tools")
         self.prompts_collection = self.ChromaDb.create_collection(collection_name="prompts")
         self.resources_collection = self.ChromaDb.create_collection(collection_name="resources")
-        # self.async_updator()
+
+        # Mark as initialized to prevent re-initialization
+        self._initialized = True
+        logger.info("RouterManager singleton instance initialized")
 
     @classmethod
     def get_router_manager(cls):
-        """Get the RouterManager instance from the app context."""
+        """Get the singleton RouterManager instance."""
         return cls()
+
+    @classmethod
+    def reset_instance(cls):
+        """Reset the singleton instance (primarily for testing).
+
+        WARNING: This should only be used in tests. In production,
+        the singleton should persist for the lifetime of the process.
+        """
+        with cls._instance_lock:
+            if cls._instance is not None:
+                # Reset initialization flag before clearing instance
+                if hasattr(cls._instance, '_initialized'):
+                    cls._instance._initialized = False
+                cls._instance = None
+        logger.info("RouterManager singleton instance reset")
 
     def get_mcp_server(self, server_id: str) -> McpServerInfo | None:
         """Get MCP server information by server ID."""
@@ -182,31 +230,56 @@ class RouterManager:
         await self._init_features(feature_type)
 
     async def _run_client_initialization(self):
-        """Sequentially initialize MCP clients for all configured servers."""
+        """Parallel initialize MCP clients for all configured servers.
+
+        Uses asyncio.gather for parallel initialization with configurable concurrency.
+        Each server has its own lock to prevent duplicate creation while allowing
+        true parallelism across different servers.
+        """
         if not self._mcp_server_cache:
             logger.info("No MCP servers configured; skipping client initialization.")
             self._clients_initialized = True
             return
 
-        logger.info(f"Sequentially initializing MCP clients for {len(self._mcp_server_cache)} servers...")
-        success: list[str] = []
-        failed: list[str] = []
+        server_count = len(self._mcp_server_cache)
+        logger.info(f"Parallel initializing MCP clients for {server_count} servers...")
 
-        for server_id, server in self._mcp_server_cache.items():
-            logger.debug(f"Initializing client for server '{server.name}' (ID: {server_id})...")
+        async def init_single_server(server_id: str, server: McpServerInfo) -> tuple[str, bool, str | None]:
+            """Initialize a single server and return (name, success, error_msg)."""
             try:
                 client = await self.get_or_create_client(server_id)
                 if client is not None:
-                    success.append(server.name)
+                    return (server.name, True, None)
                 else:
-                    failed.append(server.name)
-            except (HTTPError, BaseException) as e:
-                failed.append(server.name)
+                    return (server.name, False, "client returned None")
+            except (HTTPError, ExceptionGroup, Exception) as e:
                 logger.error(f"Error initializing client for server '{server.name}': {e}")
-                # Treat BaseException (e.g. ExceptionGroup) same as other failures
+                return (server.name, False, str(e))
+
+        # Create tasks for all servers
+        tasks = [
+            init_single_server(server_id, server)
+            for server_id, server in self._mcp_server_cache.items()
+        ]
+
+        # Execute all tasks in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect results
+        success: list[str] = []
+        failed: list[str] = []
+        for result in results:
+            if isinstance(result, Exception):
+                failed.append(f"<exception: {result}>")
+            elif isinstance(result, tuple):
+                name, ok, _ = result
+                if ok:
+                    success.append(name)
+                else:
+                    failed.append(name)
 
         self._clients_initialized = True
-        logger.info(f"Sequential initialization complete; active clients: {len(self._mcp_client_cache)}")
+        logger.info(f"Parallel initialization complete; active clients: {len(self._mcp_client_cache)}")
         logger.info(f"MCP initialization success list: {success}")
         if failed:
             logger.warning(f"MCP initialization failed list: {failed}")
@@ -236,6 +309,12 @@ class RouterManager:
             return None
 
         client = McpClient(server)
+
+        # Register global health callbacks on new client
+        if hasattr(self, '_global_health_callbacks'):
+            for callback in self._global_health_callbacks:
+                client.register_health_callback(callback)
+
         try:
             await client.__aenter__()
             if client.get_initialize_state:
@@ -249,7 +328,7 @@ class RouterManager:
             backoff_base = getattr(config, "MCP_INIT_BACKOFF_BASE", 10.0)
             status["circuit_until"] = now + backoff_base * max(1, status["fail_count"])
             logger.error(f"Client '{server.name}' failed to initialize for unknown reasons")
-        except (HTTPError, BaseException) as e:
+        except (HTTPError, ExceptionGroup, Exception) as e:
             logger.error(f"Failed to initialize client for server '{server.name}': {e}")
             traceback.print_exc()
             status["fail_count"] = fail_count + 1
@@ -260,16 +339,36 @@ class RouterManager:
         return None
 
     async def get_or_create_client(self, server_id: str) -> McpClient | None:
-        """Get or lazily initialize an MCP client for a given server id."""
+        """Get or lazily initialize an MCP client for a given server id.
+
+        Uses per-server locks to prevent race conditions while allowing
+        parallel initialization of different servers.
+        """
+        # Fast path: check cache without lock
         client = self._mcp_client_cache.get(server_id)
         if client is not None:
-            logger.info(f"Client '{client.server.name}' fetched from cache for server ID '{server_id}'")
+            logger.debug(f"Client '{client.server.name}' fetched from cache for server ID '{server_id}'")
             return client
 
-        client = await self._create_client(server_id)
-        if client is not None:
-            self._mcp_client_cache[server_id] = client
-        return client
+        # Get or create per-server lock
+        async with self._client_creation_global_lock:
+            if server_id not in self._client_creation_locks:
+                self._client_creation_locks[server_id] = asyncio.Lock()
+            lock = self._client_creation_locks[server_id]
+
+        # Acquire per-server lock for creation
+        async with lock:
+            # Double-check after acquiring lock (another task may have created it)
+            client = self._mcp_client_cache.get(server_id)
+            if client is not None:
+                logger.debug(f"Client '{client.server.name}' found after lock for server ID '{server_id}'")
+                return client
+
+            # Create new client
+            client = await self._create_client(server_id)
+            if client is not None:
+                self._mcp_client_cache[server_id] = client
+            return client
 
     async def initialize_clients(self):
         """Ensure MCP clients are initialized, awaiting any in-progress warmups."""
@@ -289,6 +388,24 @@ class RouterManager:
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
         logger.info("Cleaning up MCP clients...")
+
+        # Signal stop event to terminate async_updator gracefully
+        self._stop_event.set()
+
+        # Cancel and await the updater task if it exists
+        if self._updater_task is not None:
+            try:
+                self._updater_task.cancel()
+                try:
+                    await self._updater_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Async updater task cancelled")
+            except Exception as e:
+                logger.error(f"Error cancelling updater task: {e}")
+            finally:
+                self._updater_task = None
+
         for server_id, client in list(self._mcp_client_cache.items()):
             if client and client.get_initialize_state:
                 try:
@@ -325,7 +442,7 @@ class RouterManager:
                     success.append(server.name)
                     self._feature_initialized[feature_type] = True
                     logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
-                except (HTTPError, BaseException) as e:
+                except (HTTPError, ExceptionGroup, Exception) as e:
                     failed.append(server.name)
                     logger.error(f"Feature initialization failed for server '{server.name}', type '{feature_type}': {e}")
             else:
@@ -350,7 +467,11 @@ class RouterManager:
             logger.error(f"Client {mcp_server.name} failed: {e}")
 
     async def _send_message_wait_response(self, server_id: str, message: RouteMessage, timeout: float = 600.0):
-        """Send a message to a specific MCP client with per-call timeout and lazy init."""
+        """Send a message to a specific MCP client with per-call timeout and lazy init.
+
+        Uses the new parallel processing API (client.call) for better concurrency.
+        Multiple requests to the same server can now be processed in parallel.
+        """
         await self.initialize_clients()
         # Determine effective timeout based on function_name if caller didn't override
         if timeout == 600.0 and message.function_name:
@@ -365,12 +486,12 @@ class RouterManager:
         # Lazy init per server instead of initializing all at once
         client = await self.get_or_create_client(server_id)
         if not client:
-            logger.error(f"No available client for server ID {client.server.name}")
+            logger.error(f"No available client for server ID {server_id}")
             return None
 
         try:
-            await client.send_message(message)
-            response = await asyncio.wait_for(client.receive_message(), timeout=timeout)
+            # Use new parallel processing API
+            response = await client.call(message, timeout=timeout)
             return response
         except asyncio.TimeoutError:
             logger.error(f"Timeout waiting for response from client {client.server.name} for {message.function_name}")
@@ -585,18 +706,31 @@ class RouterManager:
         """Asynchronous updater to periodically refresh cached features and vector caches."""
         async def _async_updater():
             _features = ['tool', 'resource', 'prompt']
-            while True:
+            while not self._stop_event.is_set():
                 try:
-                    await asyncio.sleep(config.MCP_REFRESH_INTERVAL)
+                    # Use wait_for with stop_event to allow graceful shutdown
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=config.MCP_REFRESH_INTERVAL
+                        )
+                        # If we get here, stop_event was set
+                        break
+                    except asyncio.TimeoutError:
+                        # Normal timeout, continue with refresh
+                        pass
                 except Exception as e:  # noqa: BLE001
                     logger.warning("exception while sleeping: ", exc_info=e)
                     continue
                 try:
                     for feature in _features:
+                        if self._stop_event.is_set():
+                            break
                         await self._init_features(feature)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("exception while updating mcp servers: ", exc_info=e)
-        asyncio.create_task(_async_updater())
+            logger.info("Async updater stopped gracefully")
+        self._updater_task = asyncio.create_task(_async_updater())
 
     async def list_tool_names(self):
         """List tool names and descriptions from all MCP clients."""
@@ -708,4 +842,166 @@ class RouterManager:
             timeout=effective_timeout,
         )
         return getattr(response, "result", None) if response else None
+
+    # ==================== Health Status API ====================
+
+    def get_client_health_status(self, server_id: str) -> ClientHealthStatus | None:
+        """Get the health status of a specific MCP client.
+
+        Args:
+            server_id: The server ID to query
+
+        Returns:
+            ClientHealthStatus enum or None if client not found
+        """
+        client = self._mcp_client_cache.get(server_id)
+        if client:
+            return client.get_health_status()
+        return None
+
+    def get_client_health_info(self, server_id: str) -> ClientHealthInfo | None:
+        """Get detailed health information for a specific MCP client.
+
+        Args:
+            server_id: The server ID to query
+
+        Returns:
+            ClientHealthInfo object or None if client not found
+        """
+        client = self._mcp_client_cache.get(server_id)
+        if client:
+            return client.get_health_info()
+        return None
+
+    def get_all_clients_health_status(self) -> dict[str, ClientHealthStatus]:
+        """Get health status for all configured MCP clients.
+
+        Returns:
+            Dictionary mapping server_id to ClientHealthStatus
+        """
+        status_map: dict[str, ClientHealthStatus] = {}
+
+        for server_id in self._mcp_server_cache.keys():
+            client = self._mcp_client_cache.get(server_id)
+            if client:
+                status_map[server_id] = client.get_health_status()
+            else:
+                status_map[server_id] = ClientHealthStatus.DISCONNECTED
+
+        return status_map
+
+    def get_all_clients_health_info(self) -> list[ClientHealthInfo]:
+        """Get detailed health information for all configured MCP clients.
+
+        Returns:
+            List of ClientHealthInfo objects for all servers
+        """
+        health_info_list: list[ClientHealthInfo] = []
+
+        for server_id, server in self._mcp_server_cache.items():
+            client = self._mcp_client_cache.get(server_id)
+            if client:
+                health_info_list.append(client.get_health_info())
+            else:
+                # Return basic info for uninitialized clients
+                health_info_list.append(ClientHealthInfo(
+                    server_id=server_id,
+                    server_name=server.name,
+                    status=ClientHealthStatus.DISCONNECTED,
+                    last_error="Client not initialized"
+                ))
+
+        return health_info_list
+
+    def get_healthy_clients(self) -> list[str]:
+        """Get list of server IDs for all healthy clients.
+
+        Returns:
+            List of server IDs with HEALTHY status
+        """
+        healthy: list[str] = []
+        for server_id, client in self._mcp_client_cache.items():
+            if client and client.get_health_status() == ClientHealthStatus.HEALTHY:
+                healthy.append(server_id)
+        return healthy
+
+    def get_unhealthy_clients(self) -> list[str]:
+        """Get list of server IDs for all unhealthy clients.
+
+        Returns:
+            List of server IDs with UNHEALTHY or DISCONNECTED status
+        """
+        unhealthy: list[str] = []
+        for server_id in self._mcp_server_cache.keys():
+            client = self._mcp_client_cache.get(server_id)
+            if not client:
+                unhealthy.append(server_id)
+            elif client.get_health_status() in (
+                ClientHealthStatus.UNHEALTHY,
+                ClientHealthStatus.DISCONNECTED
+            ):
+                unhealthy.append(server_id)
+        return unhealthy
+
+    def register_health_callback(self, callback: HealthStatusCallback):
+        """Register a callback to be notified of health status changes for all clients.
+
+        The callback will be registered on all existing clients and any new clients
+        created in the future.
+
+        Args:
+            callback: Async function(server_id, status, error) to be called on status change
+        """
+        # Store callback for future clients
+        if not hasattr(self, '_global_health_callbacks'):
+            self._global_health_callbacks: list[HealthStatusCallback] = []
+        self._global_health_callbacks.append(callback)
+
+        # Register on existing clients
+        for client in self._mcp_client_cache.values():
+            client.register_health_callback(callback)
+
+        logger.info("Registered global health callback")
+
+    def unregister_health_callback(self, callback: HealthStatusCallback):
+        """Unregister a health status callback from all clients."""
+        if hasattr(self, '_global_health_callbacks'):
+            try:
+                self._global_health_callbacks.remove(callback)
+            except ValueError:
+                pass
+
+        for client in self._mcp_client_cache.values():
+            client.unregister_health_callback(callback)
+
+        logger.info("Unregistered global health callback")
+
+    async def force_reconnect(self, server_id: str) -> bool:
+        """Force an immediate reconnection attempt for a specific client.
+
+        Args:
+            server_id: The server ID to reconnect
+
+        Returns:
+            True if reconnection was initiated, False if client not found
+        """
+        client = self._mcp_client_cache.get(server_id)
+        if client:
+            await client.force_reconnect()
+            return True
+        return False
+
+    async def force_reconnect_all_unhealthy(self) -> list[str]:
+        """Force reconnection for all unhealthy clients.
+
+        Returns:
+            List of server IDs that had reconnection initiated
+        """
+        reconnected: list[str] = []
+        for server_id in self.get_unhealthy_clients():
+            client = self._mcp_client_cache.get(server_id)
+            if client:
+                await client.force_reconnect()
+                reconnected.append(server_id)
+        return reconnected
 

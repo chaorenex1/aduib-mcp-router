@@ -9,6 +9,9 @@ app=None
 if not app:
     app=create_app()
 
+# Event to signal when router_manager is initialized
+_router_initialized = asyncio.Event()
+
 
 async def run_mcp_server():
     """Run the MCP server."""
@@ -25,19 +28,22 @@ async def run_mcp_server():
     # Set router manager on factory for lifespan management
     mcp_factory.set_router_manager(router_manager)
 
+    # Signal that router_manager is now initialized
+    _router_initialized.set()
+
     # Run the MCP server (lifespan will handle client initialization and cleanup)
     await mcp_factory.run_mcp_server()
-
-# async def run_app():
-#     router_manager = RouterManager.get_router_manager()
-#     app.router_manager = router_manager
-#     app_context.set(app)
-#     callbacks= [run_mcp_server, router_manager.async_updator]
-#     await router_manager.run_mcp_clients(callbacks=callbacks)
 
 
 async def warmup_router():
     """Initialize router manager clients/features after app startup."""
+    # Wait for router_manager to be initialized before proceeding
+    try:
+        await asyncio.wait_for(_router_initialized.wait(), timeout=30.0)
+    except asyncio.TimeoutError:
+        logging.getLogger(__name__).error("Timeout waiting for router_manager initialization")
+        return
+
     if not app or not app.router_manager:
         return
     try:
@@ -49,7 +55,10 @@ async def warmup_router():
 
 def main():
     async def runner():
+        # Reset event for fresh run
+        _router_initialized.clear()
         # Start MCP server and warmup concurrently
+        # warmup_router will wait for _router_initialized before proceeding
         server_task = asyncio.create_task(run_mcp_server())
         warmup_task = asyncio.create_task(warmup_router())
         await server_task
