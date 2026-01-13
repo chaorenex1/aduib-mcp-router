@@ -19,9 +19,11 @@ from aduib_mcp_router.mcp_router.config_loader.remote_config_loader import Remot
 from aduib_mcp_router.mcp_router.install_bun import install_bun
 from aduib_mcp_router.mcp_router.install_uv import install_uv
 from aduib_mcp_router.mcp_router.mcp_client import McpClient
+from datetime import datetime, timezone, timedelta
 from aduib_mcp_router.mcp_router.types import (
     McpServers, McpServerInfo, McpServerInfoArgs, ShellEnv, RouteMessage,
-    ClientHealthStatus, ClientHealthInfo, HealthStatusCallback
+    ClientHealthStatus, ClientHealthInfo, HealthStatusCallback,
+    CacheEntry, CacheStatus
 )
 from aduib_mcp_router.utils import random_uuid
 
@@ -61,7 +63,8 @@ class RouterManager:
         self._mcp_server_resources_cache: dict[str, list[Any]] = {}
         self._mcp_server_prompts_cache: dict[str, list[Any]] = {}
         self._clients_initialized = False
-        self._feature_initialized: dict[str, bool] = {"tool": False, "resource": False, "prompt": False}
+        # TTL-based cache metadata: {server_id: {feature_type: CacheEntry}}
+        self._cache_metadata: dict[str, dict[str, CacheEntry]] = {}
         self._mcp_server_status: dict[str, dict[str, Any]] = {}
         self._stop_event = asyncio.Event()  # Graceful shutdown signal
         self._updater_task: asyncio.Task | None = None  # Reference to updater task
@@ -223,11 +226,128 @@ class RouterManager:
 
         return os.path.join(config.ROUTER_HOME, "bin", binary_name)
 
-    async def ensure_feature_cache(self, feature_type: str):
-        """Ensure the given feature cache has been hydrated at least once."""
-        if self._feature_initialized.get(feature_type):
+    def _get_cache_status(self, server_id: str, feature_type: str) -> CacheStatus:
+        """Check cache status for a specific server and feature type."""
+        server_meta = self._cache_metadata.get(server_id, {})
+        entry = server_meta.get(feature_type)
+        if not entry:
+            return CacheStatus.MISSING
+
+        now = datetime.now(timezone.utc)
+        if now < entry.expires_at:
+            return CacheStatus.VALID
+        elif now < entry.stale_until:
+            return CacheStatus.STALE
+        else:
+            return CacheStatus.EXPIRED
+
+    def _update_cache_metadata(self, server_id: str, feature_type: str):
+        """Update cache metadata after successful refresh."""
+        now = datetime.now(timezone.utc)
+        ttl = config.MCP_CACHE_TTL
+        stale_ttl = config.MCP_CACHE_STALE_TTL
+
+        if server_id not in self._cache_metadata:
+            self._cache_metadata[server_id] = {}
+
+        self._cache_metadata[server_id][feature_type] = CacheEntry(
+            server_id=server_id,
+            feature_type=feature_type,
+            last_updated=now,
+            expires_at=now + timedelta(seconds=ttl),
+            stale_until=now + timedelta(seconds=ttl + stale_ttl),
+            is_refreshing=False,
+        )
+        logger.debug(f"Cache metadata updated for server={server_id}, feature={feature_type}, TTL={ttl}s")
+
+    def _extend_cache_ttl(self, server_id: str):
+        """Extend cache TTL for a server when health check succeeds.
+
+        This optimization allows health check success to extend cache validity,
+        avoiding unnecessary refresh since the server is confirmed healthy.
+        """
+        if server_id not in self._cache_metadata:
             return
-        await self._init_features(feature_type)
+
+        now = datetime.now(timezone.utc)
+        ttl = config.MCP_CACHE_TTL
+        stale_ttl = config.MCP_CACHE_STALE_TTL
+        health_interval = config.MCP_HEALTH_CHECK_INTERVAL
+
+        for feature_type, entry in self._cache_metadata[server_id].items():
+            # Only extend if cache is STALE (not expired or missing)
+            if entry.expires_at <= now < entry.stale_until:
+                # Extend by health check interval (typically 30s)
+                entry.expires_at = now + timedelta(seconds=health_interval)
+                entry.stale_until = now + timedelta(seconds=health_interval + stale_ttl)
+                logger.debug(f"Extended cache TTL for {server_id}/{feature_type} by {health_interval}s")
+
+    async def _refresh_server_cache(self, server_id: str, feature_type: str):
+        """Refresh cache for a single server and feature type."""
+        server = self._mcp_server_cache.get(server_id)
+        if not server:
+            return
+
+        # Mark as refreshing to prevent concurrent refresh
+        server_meta = self._cache_metadata.get(server_id, {})
+        entry = server_meta.get(feature_type)
+        if entry and entry.is_refreshing:
+            logger.debug(f"Skip refresh for {server.name}/{feature_type}: already refreshing")
+            return
+
+        if entry:
+            entry.is_refreshing = True
+
+        client = await self.get_or_create_client(server_id)
+        if client and client.get_initialize_state:
+            try:
+                await self.cache_mcp_features(feature_type, server_id)
+                await self.refresh(feature_type, server_id)
+                self._update_cache_metadata(server_id, feature_type)
+                logger.debug(f"Cache refreshed for server={server.name}, feature={feature_type}")
+            except Exception as e:
+                logger.error(f"Failed to refresh cache for {server.name}/{feature_type}: {e}")
+        else:
+            logger.warning(f"Cannot refresh cache for {server.name}: client not ready")
+
+        if entry:
+            entry.is_refreshing = False
+
+    async def ensure_feature_cache(self, feature_type: str):
+        """Ensure the given feature cache has been hydrated with TTL support.
+
+        Implements Stale-While-Revalidate pattern:
+        - VALID: Use cache directly
+        - STALE: Return cache immediately, refresh in background
+        - EXPIRED/MISSING: Refresh synchronously before returning
+        """
+        servers_to_sync_refresh: list[str] = []
+        servers_to_async_refresh: list[str] = []
+
+        for server_id in self._mcp_server_cache.keys():
+            cache_status = self._get_cache_status(server_id, feature_type)
+
+            if cache_status == CacheStatus.VALID:
+                continue  # Cache is fresh, no action needed
+            elif cache_status == CacheStatus.STALE:
+                # Return stale data but schedule background refresh
+                servers_to_async_refresh.append(server_id)
+            else:  # EXPIRED or MISSING
+                servers_to_sync_refresh.append(server_id)
+
+        # Synchronously refresh servers with expired/missing cache
+        if servers_to_sync_refresh:
+            logger.info(f"Synchronously refreshing {feature_type} cache for {len(servers_to_sync_refresh)} servers")
+            await asyncio.gather(*[
+                self._refresh_server_cache(sid, feature_type)
+                for sid in servers_to_sync_refresh
+            ])
+
+        # Asynchronously refresh stale servers in background
+        if servers_to_async_refresh:
+            logger.debug(f"Background refreshing {feature_type} cache for {len(servers_to_async_refresh)} servers")
+            for sid in servers_to_async_refresh:
+                asyncio.create_task(self._refresh_server_cache(sid, feature_type))
 
     async def _run_client_initialization(self):
         """Parallel initialize MCP clients for all configured servers.
@@ -378,12 +498,31 @@ class RouterManager:
 
         await self._run_client_initialization()
 
+    async def _on_health_status_change(self, server_id: str, status: ClientHealthStatus, error: str | None):
+        """Callback for health status changes - extends cache TTL on healthy status."""
+        if status == ClientHealthStatus.HEALTHY:
+            self._extend_cache_ttl(server_id)
+
     async def initialize_all_features(self):
         """Initialize clients and hydrate all feature caches sequentially."""
         await self.initialize_clients()
+
+        # Register health callback to extend cache TTL on successful health checks
+        self.register_health_callback(self._on_health_status_change)
+
         for feature in ("tool", "resource", "prompt"):
-            if not self._feature_initialized.get(feature):
+            # Check if any server needs initial cache load
+            needs_init = any(
+                self._get_cache_status(sid, feature) in (CacheStatus.MISSING, CacheStatus.EXPIRED)
+                for sid in self._mcp_server_cache.keys()
+            )
+            if needs_init:
                 await self._init_features(feature)
+
+        # Start background auto-refresh if enabled
+        if config.MCP_ENABLE_AUTO_REFRESH and self._updater_task is None:
+            logger.info("Starting background auto-refresh task")
+            self.async_updator()
 
     async def cleanup_clients(self):
         """Clean up all MCP client connections."""
@@ -416,8 +555,7 @@ class RouterManager:
 
         self._mcp_client_cache.clear()
         self._clients_initialized = False
-        for feature in self._feature_initialized.keys():
-            self._feature_initialized[feature] = False
+        self._cache_metadata.clear()
         logger.info("All MCP clients cleaned up")
 
     def get_client(self, server_id: str) -> McpClient | None:
@@ -434,13 +572,13 @@ class RouterManager:
 
         for server_id in self._mcp_server_cache.keys():
             server = self._mcp_server_cache.get(server_id)
-            client=await self.get_or_create_client(server_id)
+            client = await self.get_or_create_client(server_id)
             if client and client.get_initialize_state:
                 try:
                     await self.cache_mcp_features(feature_type, server_id)
                     await self.refresh(feature_type, server_id)
+                    self._update_cache_metadata(server_id, feature_type)
                     success.append(server.name)
-                    self._feature_initialized[feature_type] = True
                     logger.debug(f"Feature '{feature_type}' init success MCPs: {success}")
                 except (HTTPError, ExceptionGroup, Exception) as e:
                     failed.append(server.name)
@@ -703,16 +841,21 @@ class RouterManager:
 
 
     def async_updator(self):
-        """Asynchronous updater to periodically refresh cached features and vector caches."""
+        """Asynchronous updater to periodically refresh cached features and vector caches.
+
+        Uses TTL-based refresh: only refreshes servers with stale/expired cache.
+        """
         async def _async_updater():
             _features = ['tool', 'resource', 'prompt']
+            # Use shorter check interval (e.g., TTL / 2) to catch stale caches promptly
+            check_interval = max(60, config.MCP_CACHE_TTL // 2)
             while not self._stop_event.is_set():
                 try:
                     # Use wait_for with stop_event to allow graceful shutdown
                     try:
                         await asyncio.wait_for(
                             self._stop_event.wait(),
-                            timeout=config.MCP_REFRESH_INTERVAL
+                            timeout=check_interval
                         )
                         # If we get here, stop_event was set
                         break
@@ -726,7 +869,8 @@ class RouterManager:
                     for feature in _features:
                         if self._stop_event.is_set():
                             break
-                        await self._init_features(feature)
+                        # Use ensure_feature_cache which handles TTL checks
+                        await self.ensure_feature_cache(feature)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("exception while updating mcp servers: ", exc_info=e)
             logger.info("Async updater stopped gracefully")

@@ -15,6 +15,26 @@ class ClientHealthStatus(str, Enum):
     DISCONNECTED = "disconnected" # Client has been disconnected
 
 
+class CacheStatus(str, Enum):
+    """Cache status for feature data."""
+    VALID = "valid"       # Cache is within TTL, use directly
+    STALE = "stale"       # Cache expired but within stale TTL, use and refresh in background
+    EXPIRED = "expired"   # Cache fully expired, must refresh synchronously
+    MISSING = "missing"   # No cache exists
+
+
+class CacheEntry(BaseModel):
+    """Cache entry for server feature data (tools/resources/prompts)."""
+    model_config = ConfigDict(extra="allow")
+
+    server_id: str
+    feature_type: str  # "tools", "resources", or "prompts"
+    last_updated: datetime
+    expires_at: datetime
+    stale_until: datetime  # After this time, cache is fully expired
+    is_refreshing: bool = False  # Flag to prevent concurrent refresh
+
+
 class ClientHealthInfo(BaseModel):
     """Detailed health information for an MCP client."""
     model_config = ConfigDict(extra="allow")

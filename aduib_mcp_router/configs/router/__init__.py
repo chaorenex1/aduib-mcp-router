@@ -19,3 +19,8 @@ class RouterConfig(BaseSettings):
     MCP_MAX_CONSECUTIVE_FAILURES: int = Field(default=3, description="Max consecutive failures before marking client as dead")
     MCP_AUTO_RECONNECT: bool = Field(default=True, description="Automatically reconnect when client becomes unhealthy")
     MCP_RECONNECT_DELAY: int = Field(default=5, description="Delay in seconds before attempting reconnection")
+
+    # Cache configurations
+    MCP_CACHE_TTL: int = Field(default=300, description="Server feature cache TTL in seconds (default 5 minutes)")
+    MCP_CACHE_STALE_TTL: int = Field(default=600, description="Maximum time stale cache can still be used in seconds (default 10 minutes)")
+    MCP_ENABLE_AUTO_REFRESH: bool = Field(default=True, description="Enable background auto-refresh of feature cache")
