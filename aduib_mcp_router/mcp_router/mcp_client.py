@@ -215,12 +215,32 @@ class McpClient:
         return tg_result
 
     async def cleanup(self):
-        """Clean up resources (streams/session) without managing task group."""
+        """Clean up resources (streams/session) without managing task group.
+
+        Note: This method may be called from different tasks during reconnection.
+        The AsyncExitStack may raise errors when closed from a different task than
+        it was entered in - these are caught and logged as warnings.
+        """
         try:
             # ExitStack will handle proper cleanup of all managed context managers
             await self.async_exit_stack.aclose()
+        except RuntimeError as e:
+            if "cancel scope" in str(e) and "different task" in str(e):
+                # This is expected when cleanup is called from a different task
+                # (e.g., during reconnection from health checker task)
+                logger.warning(
+                    f"Cleanup for '{self.server.name}' called from different task - "
+                    "resources may not be fully released. This is expected during reconnection."
+                )
+            else:
+                logger.exception("Error during cleanup")
         except (Exception, CancelledError, HTTPError):
             logger.exception("Error during cleanup")
+        except BaseExceptionGroup as exc:
+            # Handle Python 3.11+ ExceptionGroup from task groups
+            logger.warning(
+                f"ExceptionGroup during cleanup for '{self.server.name}': {exc}"
+            )
         finally:
             self._session = None
             self._session_context = None
@@ -701,7 +721,13 @@ class McpClient:
                 await self._set_health_status(ClientHealthStatus.DEGRADED, error)
 
     async def _attempt_reconnect(self):
-        """Attempt to reconnect the MCP client."""
+        """Attempt to reconnect the MCP client.
+
+        Note: This runs in a separate task from the original initialization task.
+        Due to anyio's cancel scope requirements, cleanup of the old connection may
+        not fully succeed. We create a new AsyncExitStack to avoid issues with the
+        old one.
+        """
         if self._reconnecting:
             return
 
@@ -721,10 +747,19 @@ class McpClient:
             logger.debug(f"Waiting {delay}s before reconnection for '{self.server.name}'")
             await asyncio.sleep(delay)
 
-            # Cleanup existing resources
-            await self.cleanup()
+            # Attempt cleanup of existing resources (may not fully succeed due to cross-task issues)
+            # This is a best-effort cleanup - the old resources may leak but the new connection
+            # will work correctly
+            try:
+                await self.cleanup()
+            except Exception as cleanup_exc:
+                logger.warning(
+                    f"Cleanup during reconnection for '{self.server.name}' failed: {cleanup_exc}. "
+                    "Proceeding with new connection anyway."
+                )
 
-            # Reset exit stack for new connection
+            # Create a fresh exit stack for the new connection
+            # This avoids issues with the old exit stack that may be in an inconsistent state
             self.async_exit_stack = AsyncExitStack()
 
             # Attempt to re-initialize

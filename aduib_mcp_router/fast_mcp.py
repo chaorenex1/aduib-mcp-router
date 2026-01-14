@@ -789,12 +789,42 @@ class FastMCP:
                 stateless=self.settings.stateless_http,  # Use the stateless setting
             )
 
+        # Capture session_manager reference for the lifespan closure
+        session_manager = self._session_manager
+        user_lifespan = self.settings.lifespan
+        fastmcp_self = self
+
+        @asynccontextmanager
+        async def combined_lifespan(app: Starlette) -> AsyncIterator[None]:
+            """
+            Combined lifespan that runs both user's lifespan and session manager.
+            This ensures the task group is properly initialized before handling requests.
+            """
+            if user_lifespan:
+                async with user_lifespan(fastmcp_self), session_manager.run():
+                    yield
+            else:
+                async with session_manager.run():
+                    yield
+
         # Create the ASGI handler
         async def handle_streamable_http(
             scope: Scope, receive: Receive, send: Send
         ) -> None:
             try:
                 await self.session_manager.handle_request(scope, receive, send)
+            except RuntimeError as exc:
+                if "Task group is not initialized" in str(exc):
+                    # Provide helpful error message for common misconfiguration
+                    logger.error(
+                        "StreamableHTTPSessionManager task group was not initialized. "
+                        "This commonly occurs when the FastMCP application's lifespan "
+                        "is not passed to the parent ASGI application. "
+                        "Ensure you are setting lifespan correctly when mounting the app. "
+                        "Original error: %s", exc, exc_info=exc
+                    )
+                else:
+                    logger.error("StreamableHTTP handling error: %s", exc, exc_info=exc)
             except Exception as exc:  # noqa: BLE001
                 # Prevent transport errors (e.g. SSE disconnects) from tearing down the session manager
                 logger.error("StreamableHTTP handling error: %s", exc, exc_info=exc)
@@ -852,7 +882,7 @@ class FastMCP:
             debug=self.settings.debug,
             routes=routes,
             middleware=middleware,
-            lifespan=lambda app: self.session_manager.run(),
+            lifespan=combined_lifespan,
         )
 
     async def list_prompts(self) -> list[MCPPrompt]:
